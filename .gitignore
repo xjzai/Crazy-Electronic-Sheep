@@ -1,0 +1,28 @@
+# Node.js dependencies
+/node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor folders
+.idea/
+.vscode/
+
+# Cocos Creator generated caches and local state
+/library/
+/temp/
+/local/
+/profiles/
+/build/
+
+# Project-specific discarded drafts
+/废案（忽略）/
