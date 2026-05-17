@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "rootDir": ".",
+    "outDir": "./temp/node-tests",
+    "noEmit": false,
+    "strict": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "lib": [
+      "ES2020"
+    ]
+  },
+  "include": [
+    "assets/scripts/config/**/*.ts",
+    "assets/scripts/domain/**/*.ts",
+    "assets/scripts/boot/**/*.ts"
+  ]
+}

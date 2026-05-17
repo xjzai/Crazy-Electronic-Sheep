@@ -1,0 +1,11 @@
+{
+  "name": "Crazy-Electronic-Sheep",
+  "uuid": "9adab640-26d7-49b4-b4b9-6badd68a0c71",
+  "creator": {
+    "version": "3.8.8"
+  },
+  "scripts": {
+    "test": "npx.cmd tsc -p ./tsconfig.node.json && node --test ./tests/createNewGameState.test.js ./tests/bootCoordinator.test.js",
+    "check": "npx.cmd tsc -p ./tsconfig.json --noEmit"
+  }
+}
