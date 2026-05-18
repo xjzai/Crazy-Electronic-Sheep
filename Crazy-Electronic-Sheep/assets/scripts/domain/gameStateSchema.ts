@@ -68,6 +68,23 @@ export interface GameState {
 }
 
 /**
+ * 核心 HUD 当前只关心资源、全局总秒产和最高解锁羊。
+ * 先把它收敛成纯快照，避免 UI 层自己拼业务真值。
+ */
+export interface CoreHudSnapshot {
+  idleEnergy: number;
+  globalIdleEnergyPerSecond: number;
+  highestUnlockedSheepId: SheepId;
+}
+
+/**
+ * 秒产查询只依赖最小字段，避免把完整配置类型硬耦合到领域层。
+ */
+export interface SheepIdleProductionDefinition {
+  idleEnergyPerSecond: number;
+}
+
+/**
  * 按地图顺序返回当前地图里的羊实例。
  * 地图展示层通过这个函数拿到稳定顺序，避免自己重复拼装数据。
  */
@@ -85,4 +102,65 @@ export function getMapSheepInstances(
  */
 export function countUnlockedCollectionEntries(gameState: GameState): number {
   return Object.values(gameState.collection).filter((entry) => entry.isUnlocked).length;
+}
+
+/**
+ * 汇总当前所有羊实例的基础秒产。
+ * 后续科技或临时 Buff 进入时，再在更高层服务叠加修正值。
+ */
+export function getGlobalIdleEnergyPerSecond(
+  gameState: GameState,
+  sheepDefinitions: Record<SheepId, SheepIdleProductionDefinition>,
+): number {
+  return Object.values(gameState.sheepInstances).reduce((total, sheepInstance) => {
+    const sheepDefinition = sheepDefinitions[sheepInstance.sheepId];
+    if (!sheepDefinition) {
+      throw new Error(`Missing sheep definition for ${sheepInstance.sheepId}`);
+    }
+
+    return total + sheepDefinition.idleEnergyPerSecond;
+  }, 0);
+}
+
+/**
+ * 为主场景生成“只读 HUD 视图模型”。
+ * 场景刷新时只消费这个纯快照，不直接散读深层状态字段。
+ */
+export function createCoreHudSnapshot(
+  gameState: GameState,
+  sheepDefinitions: Record<SheepId, SheepIdleProductionDefinition>,
+): CoreHudSnapshot {
+  return {
+    idleEnergy: gameState.currencies.idleEnergy,
+    globalIdleEnergyPerSecond: getGlobalIdleEnergyPerSecond(gameState, sheepDefinitions),
+    highestUnlockedSheepId: gameState.highestUnlockedSheepId,
+  };
+}
+
+/**
+ * 按“整秒批量结算”的方式推进自动产出。
+ * 当前只更新摸鱼能量与 `updatedAt`，其余系统等对应 issue 再继续接入。
+ */
+export function settleIdleProduction(
+  gameState: GameState,
+  sheepDefinitions: Record<SheepId, SheepIdleProductionDefinition>,
+  elapsedSeconds: number,
+  settledAt: number,
+): GameState {
+  const settledWholeSeconds = Math.max(0, Math.floor(elapsedSeconds));
+  if (settledWholeSeconds === 0) {
+    return gameState;
+  }
+
+  const globalIdleEnergyPerSecond = getGlobalIdleEnergyPerSecond(gameState, sheepDefinitions);
+  const producedIdleEnergy = globalIdleEnergyPerSecond * settledWholeSeconds;
+
+  return {
+    ...gameState,
+    updatedAt: settledAt,
+    currencies: {
+      ...gameState.currencies,
+      idleEnergy: gameState.currencies.idleEnergy + producedIdleEnergy,
+    },
+  };
 }
