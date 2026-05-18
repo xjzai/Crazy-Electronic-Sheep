@@ -26,3 +26,17 @@ export function writeSerializedSave(storageKey: string, gameState: GameState): b
     return false;
   }
 }
+
+/**
+ * 删除当前本地存档。
+ * 测试入口、坏档排查或手动重开都应该走这里，避免业务层直接碰底层存储介质。
+ */
+export function clearSerializedSave(storageKey: string): boolean {
+  try {
+    sys.localStorage.removeItem(storageKey);
+    return true;
+  } catch (error) {
+    console.warn('[LocalSaveRepository] clear failed', error);
+    return false;
+  }
+}

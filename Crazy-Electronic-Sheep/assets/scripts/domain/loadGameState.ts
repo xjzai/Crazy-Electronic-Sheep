@@ -118,7 +118,21 @@ export function isGameState(value: unknown, config: GameConfig = GAME_CONFIG): v
       return false;
     }
 
-    if (rawInstance.source !== 'new_game_gift') {
+    if (
+      rawInstance.source !== 'new_game_gift' &&
+      rawInstance.source !== 'purchase'
+    ) {
+      return false;
+    }
+
+    if (!isPlainRecord(rawInstance.position)) {
+      return false;
+    }
+
+    if (
+      typeof rawInstance.position.x !== 'number' ||
+      typeof rawInstance.position.y !== 'number'
+    ) {
       return false;
     }
   }

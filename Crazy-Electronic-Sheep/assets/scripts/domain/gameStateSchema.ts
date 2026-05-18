@@ -11,10 +11,19 @@ export type MapId = 'map_01' | 'map_02';
 export type SheepId = string;
 
 /**
+ * 地图内位置使用独立坐标结构保存，避免领域层直接依赖 Cocos 的 `Vec3`。
+ * 后续 UI、漫游和拖拽都应通过适配层把这里的纯数据坐标转成引擎对象。
+ */
+export interface SheepPosition {
+  x: number;
+  y: number;
+}
+
+/**
  * 当前本地存档版本号。
  * 未来结构变更时，需要通过这个字段决定是否迁移或重建存档。
  */
-export const GAME_SAVE_VERSION = 1 as const;
+export const GAME_SAVE_VERSION = 2 as const;
 
 /**
  * 图鉴项是“是否见过这只羊”的持久化真值。
@@ -34,7 +43,8 @@ export interface SheepInstanceState {
   sheepId: SheepId;
   mapId: MapId;
   bornAt: number;
-  source: 'new_game_gift';
+  source: 'new_game_gift' | 'purchase';
+  position: SheepPosition;
 }
 
 /**
@@ -83,6 +93,55 @@ export interface CoreHudSnapshot {
 export interface SheepIdleProductionDefinition {
   idleEnergyPerSecond: number;
 }
+
+/**
+ * 当前购买切片只依赖最小价格字段。
+ * 招聘机范围、科技修正和动态涨价由后续 issue 再扩展。
+ */
+export interface SheepPurchaseDefinition {
+  purchaseIdleEnergyCost: number;
+}
+
+/**
+ * 购买服务只读取地图边界、容量、出生点与当前切片允许购买的列表。
+ * 这样可以避免领域服务反向依赖完整配置对象，减少循环引用风险。
+ */
+export interface PurchaseMapDefinition {
+  startSheepId: SheepId;
+  endSheepId: SheepId;
+  maxSheepCapacity: number;
+  spawnPoints: SheepPosition[];
+  defaultPurchasableSheepIds: SheepId[];
+}
+
+export interface BuySheepConfig {
+  maps: Record<MapId, PurchaseMapDefinition>;
+  sheepDefinitions: Record<SheepId, SheepPurchaseDefinition>;
+}
+
+export interface BuyCurrentMapSheepCommand {
+  sheepId: SheepId;
+}
+
+export type BuyCurrentMapSheepFailureReason =
+  | 'map_locked'
+  | 'sheep_not_purchasable'
+  | 'insufficient_idle_energy'
+  | 'map_capacity_full'
+  | 'no_legal_spawn_position';
+
+export type BuyCurrentMapSheepResult =
+  | {
+      kind: 'success';
+      gameState: GameState;
+      purchasedInstanceId: string;
+      purchasedSheep: SheepInstanceState;
+    }
+  | {
+      kind: 'failure';
+      reason: BuyCurrentMapSheepFailureReason;
+      gameState: GameState;
+    };
 
 /**
  * 按地图顺序返回当前地图里的羊实例。
@@ -161,6 +220,183 @@ export function settleIdleProduction(
     currencies: {
       ...gameState.currencies,
       idleEnergy: gameState.currencies.idleEnergy + producedIdleEnergy,
+    },
+  };
+}
+
+function isSheepIdWithinMapBounds(
+  sheepId: SheepId,
+  mapDefinition: PurchaseMapDefinition,
+): boolean {
+  return sheepId >= mapDefinition.startSheepId && sheepId <= mapDefinition.endSheepId;
+}
+
+function createPositionKey(position: SheepPosition): string {
+  return `${position.x}:${position.y}`;
+}
+
+function findNextAvailableSpawnPoint(
+  gameState: GameState,
+  mapId: MapId,
+  mapDefinition: PurchaseMapDefinition,
+): SheepPosition | null {
+  const occupiedPositionKeys = new Set(
+    getMapSheepInstances(gameState, mapId).map((sheepInstance) =>
+      createPositionKey(sheepInstance.position),
+    ),
+  );
+
+  for (const spawnPoint of mapDefinition.spawnPoints) {
+    if (!occupiedPositionKeys.has(createPositionKey(spawnPoint))) {
+      return spawnPoint;
+    }
+  }
+
+  return null;
+}
+
+function createPurchasedInstanceId(
+  gameState: GameState,
+  mapId: MapId,
+  sheepId: SheepId,
+): string {
+  let nextIndex = 1;
+
+  while (true) {
+    const candidateId = `purchase-${mapId}-${sheepId}-${String(nextIndex).padStart(2, '0')}`;
+    if (!gameState.sheepInstances[candidateId]) {
+      return candidateId;
+    }
+
+    nextIndex += 1;
+  }
+}
+
+/**
+ * 通过当前地图公共接口购买一只羊。
+ * 这个切片只解决第一图默认购买、容量校验、合法出生点和失败无副作用，
+ * 不提前接入招聘机公式、第二图购买或拖拽合成。
+ */
+export function buySheepOnCurrentMap(
+  gameState: GameState,
+  config: BuySheepConfig,
+  command: BuyCurrentMapSheepCommand,
+  now: number = Date.now(),
+): BuyCurrentMapSheepResult {
+  const currentMapId = gameState.currentMapId;
+  const currentMapState = gameState.maps[currentMapId];
+  const currentMapDefinition = config.maps[currentMapId];
+
+  if (!currentMapState?.isUnlocked || !currentMapDefinition) {
+    return {
+      kind: 'failure',
+      reason: 'map_locked',
+      gameState,
+    };
+  }
+
+  const requestedSheepId = command.sheepId;
+  const sheepDefinition = config.sheepDefinitions[requestedSheepId];
+  const isPurchasableInCurrentSlice =
+    currentMapDefinition.defaultPurchasableSheepIds.includes(requestedSheepId) &&
+    isSheepIdWithinMapBounds(requestedSheepId, currentMapDefinition) &&
+    Boolean(sheepDefinition);
+
+  if (!isPurchasableInCurrentSlice || !sheepDefinition) {
+    return {
+      kind: 'failure',
+      reason: 'sheep_not_purchasable',
+      gameState,
+    };
+  }
+
+  if (gameState.currencies.idleEnergy < sheepDefinition.purchaseIdleEnergyCost) {
+    return {
+      kind: 'failure',
+      reason: 'insufficient_idle_energy',
+      gameState,
+    };
+  }
+
+  if (currentMapState.sheepInstanceIds.length >= currentMapDefinition.maxSheepCapacity) {
+    return {
+      kind: 'failure',
+      reason: 'map_capacity_full',
+      gameState,
+    };
+  }
+
+  const nextSpawnPoint = findNextAvailableSpawnPoint(
+    gameState,
+    currentMapId,
+    currentMapDefinition,
+  );
+  if (!nextSpawnPoint) {
+    return {
+      kind: 'failure',
+      reason: 'no_legal_spawn_position',
+      gameState,
+    };
+  }
+
+  const purchasedInstanceId = createPurchasedInstanceId(
+    gameState,
+    currentMapId,
+    requestedSheepId,
+  );
+  const purchasedSheep: SheepInstanceState = {
+    instanceId: purchasedInstanceId,
+    sheepId: requestedSheepId,
+    mapId: currentMapId,
+    bornAt: now,
+    source: 'purchase',
+    position: nextSpawnPoint,
+  };
+  const nextUnlockedSheepIds = gameState.unlockedSheepIds.includes(requestedSheepId)
+    ? gameState.unlockedSheepIds
+    : [...gameState.unlockedSheepIds, requestedSheepId].sort();
+  const nextHighestUnlockedSheepId =
+    requestedSheepId > gameState.highestUnlockedSheepId
+      ? requestedSheepId
+      : gameState.highestUnlockedSheepId;
+  const shouldUnlockCollectionEntry = !gameState.collection[requestedSheepId]?.isUnlocked;
+  const nextCollection = shouldUnlockCollectionEntry
+    ? {
+        ...gameState.collection,
+        [requestedSheepId]: {
+          sheepId: requestedSheepId,
+          isUnlocked: true,
+          unlockedAt: now,
+        },
+      }
+    : gameState.collection;
+
+  return {
+    kind: 'success',
+    purchasedInstanceId,
+    purchasedSheep,
+    gameState: {
+      ...gameState,
+      updatedAt: now,
+      highestUnlockedSheepId: nextHighestUnlockedSheepId,
+      unlockedSheepIds: nextUnlockedSheepIds,
+      currencies: {
+        ...gameState.currencies,
+        idleEnergy:
+          gameState.currencies.idleEnergy - sheepDefinition.purchaseIdleEnergyCost,
+      },
+      collection: nextCollection,
+      maps: {
+        ...gameState.maps,
+        [currentMapId]: {
+          ...currentMapState,
+          sheepInstanceIds: [...currentMapState.sheepInstanceIds, purchasedInstanceId],
+        },
+      },
+      sheepInstances: {
+        ...gameState.sheepInstances,
+        [purchasedInstanceId]: purchasedSheep,
+      },
     },
   };
 }

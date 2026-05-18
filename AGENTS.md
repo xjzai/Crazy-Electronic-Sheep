@@ -3,6 +3,20 @@
 本文件用于约束本仓库内任何 AI 代码生成行为。  
 如果本文件与临时口头要求冲突，以本文件和 `memory-bank` 中的核心文档为准，除非用户明确要求修改规则本身。
 
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs for this repo are tracked in GitHub Issues for `xjzai/Crazy-Electronic-Sheep`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+This repo currently uses the canonical triage labels `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repo should be treated as single-context for engineering skills, with authoritative domain and implementation guidance in `AGENTS.md` and `memory-bank/`. See `docs/agents/domain.md`.
+
 ## Always
 
 以下规则为始终应用，任何代码生成前都必须执行：
@@ -103,6 +117,12 @@
 3. 不要在没有充分理由的情况下引入新的重框架。
 4. 不要把数值、平台开关、走动参数分散硬编码到多个文件。
 5. 与测试、脚本、工程化相关的变更要保持与 `pnpm`、`ESLint`、`Prettier`、`Vitest` 方案一致。
+
+## Git 提交规则
+
+1. 在本仓库创建 `git commit` 时，提交信息默认使用简体中文。
+2. 只有当用户明确要求英文提交信息时，才允许改用英文。
+3. 提交信息应简洁、准确，优先描述本次变更的核心结果，而不是泛泛写法。
 
 ## 注释规则
 

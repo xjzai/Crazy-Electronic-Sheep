@@ -58,6 +58,19 @@ function createGiftInstanceId(mapId: MapId, sheepId: SheepId, index: number): st
 }
 
 /**
+ * 新档赠送羊也必须占用正式出生点，
+ * 否则后续购买逻辑无法基于统一的“已占用出生位”规则判断剩余空间。
+ */
+function getGiftSpawnPoint(config: GameConfig, mapId: MapId, index: number) {
+  const spawnPoint = config.maps[mapId].spawnPoints[index - 1];
+  if (!spawnPoint) {
+    throw new Error(`Missing spawn point ${index} for ${mapId}`);
+  }
+
+  return spawnPoint;
+}
+
+/**
  * 按冻结规则创建新档。
  * 这是 issue #2 的核心领域入口，所有“开局赠送与同步解锁状态”都从这里产出。
  */
@@ -84,6 +97,7 @@ export function createNewGameState(
       mapId: config.initialCurrentMapId,
       bornAt: now,
       source: 'new_game_gift',
+      position: getGiftSpawnPoint(config, config.initialCurrentMapId, index),
     };
     maps[config.initialCurrentMapId].sheepInstanceIds.push(instanceId);
   }
