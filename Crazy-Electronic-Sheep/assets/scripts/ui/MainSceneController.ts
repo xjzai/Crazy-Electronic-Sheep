@@ -3,13 +3,11 @@
   Camera,
   Color,
   Component,
-  Graphics,
   Label,
   Node,
   resources,
   Sprite,
   SpriteFrame,
-  tween,
   UIOpacity,
   UITransform,
   Vec3,
@@ -24,7 +22,6 @@ import {
   settleIdleProduction,
   type BuyCurrentMapSheepFailureReason,
   type GameState,
-  type SheepPosition,
 } from '../domain/gameStateSchema';
 import { setRuntimeGameState } from '../runtime/runtimeSession';
 import {
@@ -32,6 +29,16 @@ import {
   readSerializedSave,
   writeSerializedSave,
 } from '../storage/localSaveRepository';
+import { MainSceneHudView } from './MainSceneHudView';
+import { MainSceneMapSheepLayerView } from './MainSceneMapSheepLayerView';
+import {
+  createEllipse as createUiEllipse,
+  createLabel as createUiLabel,
+  createLayerNode as createUiLayerNode,
+  createRect as createUiRect,
+  createRoundedRect as createUiRoundedRect,
+  createSpriteNode as createUiSpriteNode,
+} from './uiNodeFactory';
 
 const { ccclass } = _decorator;
 
@@ -47,19 +54,11 @@ const DESIGN_HEIGHT = 1920;
 const LEGACY_LAYOUT_WIDTH = 720;
 const MAP_01_BACKGROUND_SOURCE_WIDTH = 941;
 const MAP_01_BACKGROUND_SOURCE_HEIGHT = 1672;
-const IDLE_ENERGY_HUD_SOURCE_WIDTH = 1774;
-const IDLE_ENERGY_HUD_SOURCE_HEIGHT = 500;
-const SHEEP_DIAMOND_HUD_SOURCE_WIDTH = 1900;
-// const SHEEP_DIAMOND_HUD_SOURCE_WIDTH = 2048;
-const SHEEP_DIAMOND_HUD_SOURCE_HEIGHT = 682;
 
 /**
  * `resources` 目录中的真实贴图路径，运行时统一按 `spriteFrame` 子资源加载。
  */
 const MAP_01_BACKGROUND_RESOURCE = 'map_01/map_01_background/spriteFrame';
-const SHEEP_001_RESOURCE = 'sheep/sheep_001/spriteFrame';
-const IDLE_ENERGY_HUD_RESOURCE = 'ui/idle_energy_hud_panel/spriteFrame';
-const SHEEP_DIAMOND_HUD_RESOURCE = 'ui/sheep_diamond_hud_panel/spriteFrame';
 const IDLE_ENERGY_ICON_RESOURCE = 'ui/idle_energy_icon/spriteFrame';
 const RECRUITMENT_MAIN_BUTTON_RESOURCE = 'ui/recruitment/recruitment_main_button/spriteFrame';
 const RECRUITMENT_MODAL_FRAME_RESOURCE = 'ui/recruitment/recruitment_modal_frame/spriteFrame';
@@ -82,10 +81,6 @@ const RECRUITMENT_SHEEP_007_CARD_RESOURCE = 'sheep/recruitment/sheep_007_card/sp
  */
 const SHEEP_001_DISPLAY_WIDTH = 131;
 const SHEEP_001_DISPLAY_HEIGHT = 120;
-const SHEEP_001_SHADOW_WIDTH = 120;
-const SHEEP_001_SHADOW_HEIGHT = 42;
-const SHEEP_001_SHADOW_POSITION_Y = -320;
-const SHEEP_001_SHADOW_OFFSET_Y = -50;
 const RECRUITMENT_MAIN_BUTTON_SOURCE_WIDTH = 806;
 const RECRUITMENT_MAIN_BUTTON_SOURCE_HEIGHT = 850;
 const RECRUITMENT_MODAL_FRAME_SOURCE_WIDTH = 1086;
@@ -111,19 +106,6 @@ const RECRUITMENT_SHEEP_007_CARD_SOURCE_HEIGHT = 1672;
 const SECONDARY_RECRUITMENT_PREVIEW_SHEEP_ID = '007';
 
 /**
- * 羊头顶资源飘字使用统一的轻量动效参数。
- * 当前会复用到第一图里所有已经渲染出来的羊节点上。
- */
-const SHEEP_IDLE_ENERGY_FEEDBACK_WIDTH = 210;
-const SHEEP_IDLE_ENERGY_FEEDBACK_HEIGHT = 58;
-const SHEEP_IDLE_ENERGY_FEEDBACK_START_Y = 114;
-const SHEEP_IDLE_ENERGY_FEEDBACK_RISE_DISTANCE = 78;
-const SHEEP_IDLE_ENERGY_FEEDBACK_DURATION_SECONDS = 0.9;
-const SHEEP_IDLE_ENERGY_FEEDBACK_STAGGER_SECONDS = 0.12;
-const SHEEP_IDLE_ENERGY_FEEDBACK_ICON_SIZE = 50;
-const SHEEP_IDLE_ENERGY_FEEDBACK_FONT_SIZE = 100;
-
-/**
  * 自动产出轮询频率高于 1 秒，但结算始终按整秒推进。
  * 这样既能及时检查状态，又能保证 HUD 数字按秒跳动。
  */
@@ -140,11 +122,7 @@ type SceneVisualNodes = {
   backgroundArtLayer: Node;
   sheepArtAnchor: Node;
   sheepStatusLabel: Label;
-  idleEnergyHudSpriteAnchor: Node;
-  highestUnlockedHudSpriteAnchor: Node;
-  idleEnergyValueLabel: Label;
-  globalIdleEnergyPerSecondValueLabel: Label;
-  sheepDiamondValueLabel: Label;
+  hudView: MainSceneHudView;
 };
 
 /**
@@ -155,16 +133,6 @@ type ViewportMetrics = {
   width: number;
   height: number;
   layoutScale: number;
-};
-
-/**
- * HUD 面板由贴图层和文字层组成。
- * 文字层必须独立于贴图层，否则后续异步挂图会把文字盖掉。
- */
-type HudPanelLayers = {
-  root: Node;
-  spriteAnchor: Node;
-  labelLayer: Node;
 };
 
 @ccclass('MainSceneController')
@@ -194,17 +162,6 @@ export class MainSceneController extends Component {
   private idleProductionLoopOwnerToken = '';
 
   /**
-   * 摸鱼能量小图标会被每秒飘字频繁复用，因此在控制器内缓存加载 Promise。
-   * 这样既避免重复读资源，也能在首次失败后允许后续重新尝试。
-   */
-  private idleEnergyFeedbackSpriteFramePromise: Promise<SpriteFrame> | null = null;
-
-  /**
-   * 当前地图羊贴图也会在购买成功后反复复用，缓存起来避免每次重绘都重复加载。
-   */
-  private sheep001SpriteFramePromise: Promise<SpriteFrame> | null = null;
-
-  /**
    * 招聘弹窗显示状态独立于业务真值，
    * 这样关闭弹窗不会修改游戏状态，只影响当前可视层。
    */
@@ -220,7 +177,7 @@ export class MainSceneController extends Component {
    * 地图羊群与招聘弹窗属于当前主场景的附加视图层，
    * 先作为控制器内部字段维护，后续若 UI 继续增大再拆到独立模块。
    */
-  private mapSheepLayer: Node | null = null;
+  private mapSheepLayerView: MainSceneMapSheepLayerView | null = null;
   private recruitmentModalRoot: Node | null = null;
   private recruitmentSheepNameLabel: Label | null = null;
   private recruitmentIdleProductionLabel: Label | null = null;
@@ -270,7 +227,6 @@ export class MainSceneController extends Component {
       const sceneVisualNodes = this.renderFoundation();
       this.sceneVisualNodes = sceneVisualNodes;
       this.refreshCoreHud(bootResult.gameState, sceneVisualNodes);
-      this.preloadIdleEnergyFeedbackSpriteFrame();
       this.startIdleProductionLoop();
 
       await this.hydrateSceneArt(bootResult.gameState, sceneVisualNodes);
@@ -301,46 +257,6 @@ export class MainSceneController extends Component {
       MAP_01_BACKGROUND_SOURCE_HEIGHT,
     );
     const mapVisibleHeight = Math.min(backgroundDisplayHeight, viewportMetrics.height);
-
-    /**
-     * 两张 HUD 面板必须同时待在屏幕内。
-     * 先按期望宽度布局，再基于可用宽度做统一收缩，避免任一侧越界。
-     */
-    const sidePadding = scaleLayout(16);
-    const topPadding = scaleLayout(16);
-    const panelGap = scaleLayout(10);
-    const targetIdleEnergyHudWidth = scaleLayout(300);
-    const targetDiamondHudWidth = scaleLayout(180);
-    const availableHudWidth = Math.max(
-      1,
-      viewportMetrics.width - sidePadding * 2 - panelGap,
-    );
-    const totalTargetHudWidth = targetIdleEnergyHudWidth + targetDiamondHudWidth;
-    const hudFitScale = Math.min(1, availableHudWidth / totalTargetHudWidth);
-    const idleEnergyHudWidth = Math.round(targetIdleEnergyHudWidth * hudFitScale);
-    const diamondHudWidth = Math.round(targetDiamondHudWidth * hudFitScale);
-    const idleEnergyHudHeight = this.calculateHeightByWidth(
-      idleEnergyHudWidth,
-      IDLE_ENERGY_HUD_SOURCE_WIDTH,
-      IDLE_ENERGY_HUD_SOURCE_HEIGHT,
-    );
-    const diamondHudHeight = this.calculateHeightByWidth(
-      diamondHudWidth,
-      SHEEP_DIAMOND_HUD_SOURCE_WIDTH,
-      SHEEP_DIAMOND_HUD_SOURCE_HEIGHT,
-    );
-    const scaledHudGap = Math.round(panelGap * hudFitScale);
-    const diamondHudX =
-      -Math.round(viewportMetrics.width / 2) + sidePadding + Math.round(diamondHudWidth / 2);
-    const diamondHudY =
-      Math.round(mapVisibleHeight / 2) - topPadding - Math.round(diamondHudHeight / 2);
-    const idleEnergyHudX =
-      diamondHudX +
-      Math.round(diamondHudWidth / 2) +
-      scaledHudGap +
-      Math.round(idleEnergyHudWidth / 2);
-    const idleEnergyHudY = diamondHudY;
-    const hudTextScale = Math.max(0.72, hudFitScale);
 
     const canvasNode = this.node.parent;
     const canvasNodeTransform = canvasNode?.getComponent(UITransform);
@@ -379,90 +295,22 @@ export class MainSceneController extends Component {
     );
 
     /**
-     * 左侧面板使用新透明底 UI。
-     * 黄色区域展示总资产，绿色区域展示 `xx/s` 秒产。
+     * 顶部 HUD 已迁移到独立组件。
+     * 主控制器只负责创建组件节点并传入布局输入，不再持有 HUD 子节点细节。
      */
-    const idleEnergyHud = this.createHudPanelLayers(
+    const hudRoot = this.createLayerNode(
       this.node,
-      'IdleEnergyHud',
-      new Vec3(idleEnergyHudX, idleEnergyHudY, 0),
-      idleEnergyHudWidth,
-      idleEnergyHudHeight,
+      'CoreHudView',
+      new Vec3(0, 0, 10),
+      viewportMetrics.width,
+      mapVisibleHeight,
     );
-    const idleEnergyValueLabel = this.createLabel(
-      idleEnergyHud.labelLayer,
-      'IdleEnergyValueLabel',
-      '0',
-      Math.max(26, Math.round(scaleLayout(40) * hudTextScale)),
-      Math.round(idleEnergyHudWidth * 0.46),
-      Math.round(idleEnergyHudHeight * 0.46),
-      new Vec3(
-        Math.round(idleEnergyHudWidth * 0.10),
-        Math.round(idleEnergyHudHeight * 0.14),
-        0,
-      ),
-      new Color(83, 57, 35, 255),
-      Label.HorizontalAlign.CENTER,
-      true,
-    );
-    const globalIdleEnergyPerSecondValueLabel = this.createLabel(
-      idleEnergyHud.labelLayer,
-      'GlobalIdleEnergyPerSecondValueLabel',
-      '0/s',
-      Math.max(16, Math.round(scaleLayout(22) * hudTextScale)),
-      Math.round(idleEnergyHudWidth * 0.38),
-      Math.round(idleEnergyHudHeight * 0.30),
-      new Vec3(
-        Math.round(idleEnergyHudWidth * 0.10),
-        Math.round(idleEnergyHudHeight * -0.23),
-        0,
-      ),
-      new Color(247, 251, 239, 255),
-      Label.HorizontalAlign.CENTER,
-      true,
-    );
-
-    /**
-     * 左上角面板当前只显示羊钻数。
-     * 真实羊钻系统尚未接入，所以这里先稳定显示 `0`。
-     */
-    const highestUnlockedHud = this.createHudPanelLayers(
-      this.node,
-      'HighestUnlockedHud',
-      new Vec3(diamondHudX, diamondHudY, 0),
-      diamondHudWidth,
-      diamondHudHeight,
-    );
-    const sheepDiamondValueLabel = this.createLabel(
-      highestUnlockedHud.labelLayer,
-      'SheepDiamondValueLabel',
-      '0',
-      Math.max(24, Math.round(scaleLayout(36) * hudTextScale)),
-      Math.round(diamondHudWidth * 0.38),
-      Math.round(diamondHudHeight * 0.53),
-      new Vec3(
-        Math.round(diamondHudWidth * 0.18),
-        Math.round(diamondHudHeight * 0.00),
-        0,
-      ),
-      new Color(95, 70, 110, 255),
-      Label.HorizontalAlign.CENTER,
-      true,
-    );
-
-    /**
-     * 羊影子改为真正椭圆，避免在浅色草地上看起来像一条硬条带。已经没用
-     */
-    // this.createEllipse(
-    //   this.node,
-    //   'SheepShadow',
-    //   new Vec3(0, scaleLayout(SHEEP_001_SHADOW_POSITION_Y), 0),
-    //   scaleLayout(SHEEP_001_SHADOW_WIDTH),
-    //   scaleLayout(SHEEP_001_SHADOW_HEIGHT),
-    //   new Color(0, 0, 0, 82),
-    //   new Color(0, 0, 0, 0),
-    //   0,
-    // );
+    const hudView = hudRoot.addComponent(MainSceneHudView);
+    hudView.build({
+      viewportWidth: viewportMetrics.width,
+      mapVisibleHeight,
+      layoutScale: viewportMetrics.layoutScale,
+    });
 
     const sheepArtAnchor = this.createLayerNode(
       this.node,
@@ -531,11 +379,7 @@ export class MainSceneController extends Component {
       backgroundArtLayer,
       sheepArtAnchor,
       sheepStatusLabel,
-      idleEnergyHudSpriteAnchor: idleEnergyHud.spriteAnchor,
-      highestUnlockedHudSpriteAnchor: highestUnlockedHud.spriteAnchor,
-      idleEnergyValueLabel,
-      globalIdleEnergyPerSecondValueLabel,
-      sheepDiamondValueLabel,
+      hudView,
     };
   }
 
@@ -547,18 +391,9 @@ export class MainSceneController extends Component {
     _gameState: GameState,
     sceneVisualNodes: SceneVisualNodes,
   ): Promise<void> {
-    await this.attachBackgroundSprite(sceneVisualNodes.backgroundArtLayer);
     await Promise.all([
-      this.attachHudPanelSprite(
-        sceneVisualNodes.idleEnergyHudSpriteAnchor,
-        IDLE_ENERGY_HUD_RESOURCE,
-        'IdleEnergyHudSprite',
-      ),
-      this.attachHudPanelSprite(
-        sceneVisualNodes.highestUnlockedHudSpriteAnchor,
-        SHEEP_DIAMOND_HUD_RESOURCE,
-        'HighestUnlockedHudSprite',
-      ),
+      this.attachBackgroundSprite(sceneVisualNodes.backgroundArtLayer),
+      sceneVisualNodes.hudView.attachPanelSprites(),
     ]);
   }
 
@@ -1251,83 +1086,39 @@ export class MainSceneController extends Component {
     gameState: GameState,
     sceneVisualNodes: SceneVisualNodes,
   ): Promise<void> {
-    const sheepInstances = getMapSheepInstances(gameState, 'map_01').sort(
-      (left, right) => left.position.y - right.position.y,
-    );
-    if (!this.mapSheepLayer?.isValid) {
-      const viewportMetrics = this.getViewportMetrics();
-      this.mapSheepLayer = this.createLayerNode(
-        this.node,
-        'MapSheepLayer',
-        new Vec3(0, 0, 5),
-        viewportMetrics.width,
-        viewportMetrics.height,
-      );
-      this.mapSheepLayer.setSiblingIndex(sceneVisualNodes.sheepArtAnchor.getSiblingIndex());
-    }
-
-    sceneVisualNodes.sheepArtAnchor.removeAllChildren();
-    sceneVisualNodes.sheepArtAnchor.active = true;
-    this.mapSheepLayer.removeAllChildren();
-
-    if (sheepInstances.length === 0) {
-      sceneVisualNodes.sheepStatusLabel.string = '当前第一图没有可显示的羊实例';
-      return;
-    }
-
-    const spriteFrame = await this.loadSheep001SpriteFrame();
-    sceneVisualNodes.sheepArtAnchor.setPosition(
-      this.scalePositionForViewport(sheepInstances[0].position, this.currentLayoutScale),
-    );
-
-    for (const sheepInstance of sheepInstances) {
-      const sheepNode = this.createLayerNode(
-        this.mapSheepLayer,
-        `MapSheep-${sheepInstance.instanceId}`,
-        this.scalePositionForViewport(sheepInstance.position, this.currentLayoutScale),
-        SHEEP_001_DISPLAY_WIDTH,
-        SHEEP_001_DISPLAY_HEIGHT,
-      );
-      this.createEllipse(
-        sheepNode,
-        `SheepShadow-${sheepInstance.instanceId}`,
-        new Vec3(0, Math.round(this.currentLayoutScale * SHEEP_001_SHADOW_OFFSET_Y), 0),
-        Math.round(this.currentLayoutScale * SHEEP_001_SHADOW_WIDTH),
-        Math.round(this.currentLayoutScale * SHEEP_001_SHADOW_HEIGHT),
-        new Color(0, 0, 0, 82),
-        new Color(0, 0, 0, 0),
-        0,
-      );
-      this.createSpriteNode(
-        sheepNode,
-        `SheepSprite-${sheepInstance.instanceId}`,
-        spriteFrame,
-        new Vec3(0, 0, 0),
-        Math.round(this.currentLayoutScale * SHEEP_001_DISPLAY_WIDTH),
-        Math.round(this.currentLayoutScale * SHEEP_001_DISPLAY_HEIGHT),
-      );
-    }
+    const mapSheepLayerView = this.ensureMapSheepLayerView(sceneVisualNodes);
+    await mapSheepLayerView.render(gameState, {
+      layoutScale: this.currentLayoutScale,
+      sheepArtAnchor: sceneVisualNodes.sheepArtAnchor,
+      sheepStatusLabel: sceneVisualNodes.sheepStatusLabel,
+    });
   }
 
-  private loadSheep001SpriteFrame(): Promise<SpriteFrame> {
-    if (!this.sheep001SpriteFramePromise) {
-      this.sheep001SpriteFramePromise = this.loadSpriteFrame(SHEEP_001_RESOURCE).catch(
-        (error) => {
-          this.sheep001SpriteFramePromise = null;
-          throw error;
-        },
-      );
+  /**
+   * 创建或复用地图羊群表现组件。
+   * 主控制器只负责挂载组件节点，具体羊节点和飘字由组件维护。
+   */
+  private ensureMapSheepLayerView(
+    sceneVisualNodes: SceneVisualNodes,
+  ): MainSceneMapSheepLayerView {
+    if (this.mapSheepLayerView?.node.isValid) {
+      return this.mapSheepLayerView;
     }
 
-    return this.sheep001SpriteFramePromise;
-  }
-
-  private scalePositionForViewport(position: SheepPosition, layoutScale: number): Vec3 {
-    return new Vec3(
-      Math.round(position.x * layoutScale),
-      Math.round(position.y * layoutScale),
-      0,
+    const viewportMetrics = this.getViewportMetrics();
+    const mapSheepLayer = this.createLayerNode(
+      this.node,
+      'MapSheepLayer',
+      new Vec3(0, 0, 5),
+      viewportMetrics.width,
+      viewportMetrics.height,
     );
+    mapSheepLayer.setSiblingIndex(sceneVisualNodes.sheepArtAnchor.getSiblingIndex());
+
+    this.mapSheepLayerView = mapSheepLayer.addComponent(MainSceneMapSheepLayerView);
+    this.mapSheepLayerView.preloadIdleEnergyFeedbackSpriteFrame();
+
+    return this.mapSheepLayerView;
   }
 
   private formatRecruitmentFailureMessage(
@@ -1440,29 +1231,6 @@ export class MainSceneController extends Component {
     }
   };
 
-  private async attachHudPanelSprite(
-    spriteAnchor: Node,
-    resourcePath: string,
-    spriteNodeName: string,
-  ): Promise<void> {
-    try {
-      const spriteFrame = await this.loadSpriteFrame(resourcePath);
-      const spriteTransform = spriteAnchor.getComponent(UITransform);
-      const spriteWidth = spriteTransform?.contentSize.width ?? 0;
-      const spriteHeight = spriteTransform?.contentSize.height ?? 0;
-      this.createSpriteNode(
-        spriteAnchor,
-        spriteNodeName,
-        spriteFrame,
-        new Vec3(0, 0, 0),
-        spriteWidth,
-        spriteHeight,
-      );
-    } catch (error) {
-      console.error(`[MainSceneController] hud panel load failed: ${resourcePath}`, error);
-    }
-  }
-
   /**
    * 启动自动产出轮询。
    * 每次启动前先取消旧轮询，并注册新的 owner token，防止热刷新叠加资源。
@@ -1550,22 +1318,12 @@ export class MainSceneController extends Component {
    */
   private refreshCoreHud(gameState: GameState, sceneVisualNodes: SceneVisualNodes): void {
     const hudSnapshot = createCoreHudSnapshot(gameState, GAME_CONFIG.sheepDefinitions);
-    sceneVisualNodes.idleEnergyValueLabel.string = this.formatIdleEnergyValue(
-      hudSnapshot.idleEnergy,
-    );
-    sceneVisualNodes.globalIdleEnergyPerSecondValueLabel.string = `${this.formatIdleEnergyValue(
-      hudSnapshot.globalIdleEnergyPerSecond,
-    )}/s`;
-    sceneVisualNodes.sheepDiamondValueLabel.string = '0';
-  }
-
-  /**
-   * 提前加载摸鱼能量图标，避免首次自动产出时再阻塞飘字创建。
-   * 资源加载失败时只打日志，不影响核心秒产与 HUD 刷新。
-   */
-  private preloadIdleEnergyFeedbackSpriteFrame(): void {
-    void this.loadIdleEnergyFeedbackSpriteFrame().catch((error) => {
-      console.error('[MainSceneController] idle energy feedback icon load failed', error);
+    sceneVisualNodes.hudView.refresh({
+      idleEnergyText: this.formatIdleEnergyValue(hudSnapshot.idleEnergy),
+      globalIdleEnergyPerSecondText: `${this.formatIdleEnergyValue(
+        hudSnapshot.globalIdleEnergyPerSecond,
+      )}/s`,
+      sheepDiamondText: '0',
     });
   }
 
@@ -1577,123 +1335,15 @@ export class MainSceneController extends Component {
     gameState: GameState,
     settledSeconds: number,
   ): void {
-    if (!this.mapSheepLayer?.isValid || settledSeconds <= 0) {
+    if (!this.mapSheepLayerView?.node.isValid) {
       return;
     }
 
-    const displayedSheepInstances = getMapSheepInstances(gameState, 'map_01');
-    const showCompressedFeedback = settledSeconds > 5;
-    for (const sheepInstance of displayedSheepInstances) {
-      const sheepNode = this.mapSheepLayer.getChildByName(`MapSheep-${sheepInstance.instanceId}`);
-      const sheepDefinition = GAME_CONFIG.sheepDefinitions[sheepInstance.sheepId];
-      if (!sheepNode?.isValid || !sheepDefinition || sheepDefinition.idleEnergyPerSecond <= 0) {
-        continue;
-      }
-
-      if (showCompressedFeedback) {
-        void this.spawnIdleEnergyFeedback(
-          sheepNode,
-          sheepDefinition.idleEnergyPerSecond * settledSeconds,
-        );
-        continue;
-      }
-
-      for (let secondIndex = 0; secondIndex < settledSeconds; secondIndex += 1) {
-        this.scheduleOnce(() => {
-          if (!sheepNode.isValid) {
-            return;
-          }
-
-          void this.spawnIdleEnergyFeedback(
-            sheepNode,
-            sheepDefinition.idleEnergyPerSecond,
-          );
-        }, secondIndex * SHEEP_IDLE_ENERGY_FEEDBACK_STAGGER_SECONDS);
-      }
-    }
-  }
-
-  /**
-   * 创建一次“图标 + +x 数字”的轻量飘字。
-   * 动画只做上浮和淡出，避免盖过主 HUD 的阅读优先级。
-   */
-  private async spawnIdleEnergyFeedback(
-    sheepArtAnchor: Node,
-    producedIdleEnergy: number,
-  ): Promise<void> {
-    if (!sheepArtAnchor?.isValid || producedIdleEnergy <= 0) {
-      return;
-    }
-
-    try {
-      const spriteFrame = await this.loadIdleEnergyFeedbackSpriteFrame();
-      if (!sheepArtAnchor.isValid) {
-        return;
-      }
-
-      const startPosition = new Vec3(0, SHEEP_IDLE_ENERGY_FEEDBACK_START_Y, 0);
-      const endPosition = new Vec3(
-        0,
-        SHEEP_IDLE_ENERGY_FEEDBACK_START_Y + SHEEP_IDLE_ENERGY_FEEDBACK_RISE_DISTANCE,
-        0,
-      );
-      const feedbackRoot = this.createLayerNode(
-        sheepArtAnchor,
-        `IdleEnergyFeedback-${Date.now()}`,
-        startPosition,
-        SHEEP_IDLE_ENERGY_FEEDBACK_WIDTH,
-        SHEEP_IDLE_ENERGY_FEEDBACK_HEIGHT,
-      );
-      feedbackRoot.setSiblingIndex(99);
-
-      const opacity = feedbackRoot.addComponent(UIOpacity);
-      opacity.opacity = 255;
-
-      this.createSpriteNode(
-        feedbackRoot,
-        'IdleEnergyFeedbackIcon',
-        spriteFrame,
-        new Vec3(-56, 0, 0),
-        SHEEP_IDLE_ENERGY_FEEDBACK_ICON_SIZE,
-        SHEEP_IDLE_ENERGY_FEEDBACK_ICON_SIZE,
-      );
-      this.createLabel(
-        feedbackRoot,
-        'IdleEnergyFeedbackValue',
-        `+${this.formatIdleEnergyValue(producedIdleEnergy)}`,
-        SHEEP_IDLE_ENERGY_FEEDBACK_FONT_SIZE,
-        138,
-        SHEEP_IDLE_ENERGY_FEEDBACK_HEIGHT,
-        new Vec3(50, 0, 0),
-        new Color(255, 243, 142, 255),
-        Label.HorizontalAlign.LEFT,
-        true,
-      );
-
-      tween(feedbackRoot)
-        .to(
-          SHEEP_IDLE_ENERGY_FEEDBACK_DURATION_SECONDS,
-          { position: endPosition },
-          { easing: 'sineOut' },
-        )
-        .call(() => {
-          if (feedbackRoot.isValid) {
-            feedbackRoot.destroy();
-          }
-        })
-        .start();
-
-      tween(opacity)
-        .delay(0.08)
-        .to(
-          SHEEP_IDLE_ENERGY_FEEDBACK_DURATION_SECONDS - 0.08,
-          { opacity: 0 },
-          { easing: 'quadOut' },
-        )
-        .start();
-    } catch (error) {
-      console.error('[MainSceneController] idle energy feedback spawn failed', error);
-    }
+    this.mapSheepLayerView.playIdleProductionFeedback(gameState, {
+      settledSeconds,
+      sheepDefinitions: GAME_CONFIG.sheepDefinitions,
+      formatIdleEnergyValue: (value) => this.formatIdleEnergyValue(value),
+    });
   }
 
   /**
@@ -1734,23 +1384,6 @@ export class MainSceneController extends Component {
         resolve(spriteFrame);
       });
     });
-  }
-
-  /**
-   * 摸鱼能量图标属于高频复用资源，单独做 Promise 缓存。
-   * 失败时会清空缓存，便于后续 tick 再次尝试加载。
-   */
-  private loadIdleEnergyFeedbackSpriteFrame(): Promise<SpriteFrame> {
-    if (!this.idleEnergyFeedbackSpriteFramePromise) {
-      this.idleEnergyFeedbackSpriteFramePromise = this.loadSpriteFrame(
-        IDLE_ENERGY_ICON_RESOURCE,
-      ).catch((error) => {
-        this.idleEnergyFeedbackSpriteFramePromise = null;
-        throw error;
-      });
-    }
-
-    return this.idleEnergyFeedbackSpriteFramePromise;
   }
 
   /**
@@ -1841,49 +1474,7 @@ export class MainSceneController extends Component {
     width: number,
     height: number,
   ): Node {
-    const node = new Node(name);
-    node.parent = parent;
-    node.setPosition(position);
-
-    const transform = node.addComponent(UITransform);
-    transform.setContentSize(width, height);
-
-    return node;
-  }
-
-  /**
-   * 创建 HUD 面板的根节点、贴图层和文字层。
-   * 贴图层永远放在底部，文字层永远放在上面。
-   */
-  private createHudPanelLayers(
-    parent: Node,
-    name: string,
-    position: Vec3,
-    width: number,
-    height: number,
-  ): HudPanelLayers {
-    const root = this.createLayerNode(parent, name, position, width, height);
-    const spriteAnchor = this.createLayerNode(
-      root,
-      `${name}SpriteAnchor`,
-      new Vec3(0, 0, 0),
-      width,
-      height,
-    );
-    const labelLayer = this.createLayerNode(
-      root,
-      `${name}LabelLayer`,
-      new Vec3(0, 0, 0),
-      width,
-      height,
-    );
-    labelLayer.setSiblingIndex(1);
-
-    return {
-      root,
-      spriteAnchor,
-      labelLayer,
-    };
+    return createUiLayerNode(parent, name, position, width, height);
   }
 
   /**
@@ -1898,18 +1489,7 @@ export class MainSceneController extends Component {
     width: number,
     height: number,
   ): Sprite {
-    const node = new Node(name);
-    node.parent = parent;
-    node.setPosition(position);
-
-    const transform = node.addComponent(UITransform);
-    transform.setContentSize(width, height);
-
-    const sprite = node.addComponent(Sprite);
-    sprite.sizeMode = Sprite.SizeMode.CUSTOM;
-    sprite.spriteFrame = spriteFrame;
-
-    return sprite;
+    return createUiSpriteNode(parent, name, spriteFrame, position, width, height);
   }
 
   /**
@@ -1924,22 +1504,7 @@ export class MainSceneController extends Component {
     fillColor: Color,
     strokeColor: Color,
   ): Node {
-    const node = new Node(name);
-    node.parent = parent;
-    node.setPosition(position);
-
-    const transform = node.addComponent(UITransform);
-    transform.setContentSize(width, height);
-
-    const graphics = node.addComponent(Graphics);
-    graphics.fillColor = fillColor;
-    graphics.strokeColor = strokeColor;
-    graphics.lineWidth = 4;
-    graphics.rect(-width / 2, -height / 2, width, height);
-    graphics.fill();
-    graphics.stroke();
-
-    return node;
+    return createUiRect(parent, name, position, width, height, fillColor, strokeColor);
   }
 
   /**
@@ -1958,25 +1523,18 @@ export class MainSceneController extends Component {
     horizontalAlign: number = Label.HorizontalAlign.CENTER,
     isBold: boolean = false,
   ): Label {
-    const node = new Node(name);
-    node.parent = parent;
-    node.setPosition(position);
-
-    const transform = node.addComponent(UITransform);
-    transform.setContentSize(width, height);
-
-    const label = node.addComponent(Label);
-    label.string = text;
-    label.fontSize = fontSize;
-    label.lineHeight = fontSize + 10;
-    label.color = color;
-    label.enableWrapText = true;
-    label.overflow = Label.Overflow.SHRINK;
-    label.horizontalAlign = horizontalAlign;
-    label.verticalAlign = Label.VerticalAlign.CENTER;
-    label.isBold = isBold;
-
-    return label;
+    return createUiLabel(
+      parent,
+      name,
+      text,
+      fontSize,
+      width,
+      height,
+      position,
+      color,
+      horizontalAlign,
+      isBold,
+    );
   }
 
   /**
@@ -1994,24 +1552,17 @@ export class MainSceneController extends Component {
     strokeColor: Color,
     lineWidth: number,
   ): Node {
-    const node = new Node(name);
-    node.parent = parent;
-    node.setPosition(position);
-
-    const transform = node.addComponent(UITransform);
-    transform.setContentSize(width, height);
-
-    const graphics = node.addComponent(Graphics);
-    graphics.fillColor = fillColor;
-    graphics.strokeColor = strokeColor;
-    graphics.lineWidth = lineWidth;
-    graphics.roundRect(-width / 2, -height / 2, width, height, radius);
-    graphics.fill();
-    if (lineWidth > 0) {
-      graphics.stroke();
-    }
-
-    return node;
+    return createUiRoundedRect(
+      parent,
+      name,
+      position,
+      width,
+      height,
+      radius,
+      fillColor,
+      strokeColor,
+      lineWidth,
+    );
   }
 
   /**
@@ -2028,23 +1579,15 @@ export class MainSceneController extends Component {
     strokeColor: Color,
     lineWidth: number,
   ): Node {
-    const node = new Node(name);
-    node.parent = parent;
-    node.setPosition(position);
-
-    const transform = node.addComponent(UITransform);
-    transform.setContentSize(width, height);
-
-    const graphics = node.addComponent(Graphics);
-    graphics.fillColor = fillColor;
-    graphics.strokeColor = strokeColor;
-    graphics.lineWidth = lineWidth;
-    graphics.ellipse(0, 0, width / 2, height / 2);
-    graphics.fill();
-    if (lineWidth > 0) {
-      graphics.stroke();
-    }
-
-    return node;
+    return createUiEllipse(
+      parent,
+      name,
+      position,
+      width,
+      height,
+      fillColor,
+      strokeColor,
+      lineWidth,
+    );
   }
 }
