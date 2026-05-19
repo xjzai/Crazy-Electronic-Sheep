@@ -126,6 +126,12 @@
 - `MainSceneController` 当前降到约 523 行，职责进一步收敛为启动、状态协调、组件装配和少量业务入口；自动产出循环与基础场景视图已由独立 Cocos 组件持有。
 - 本轮未改动存档结构、玩法数值、购买规则和资源素材，只调整模块边界。
 - 验证状态：`npm run check` 通过，`npm test` 的 Node 逻辑测试 10 项通过。
+- 已开始从“运行时 addComponent”迁移到 Cocos 场景挂载方式：`MainScene.scene` 的 `ContentRoot` 已直接挂载 `MainSceneFoundationView` 和 `MainSceneIdleProductionLoop`，并由 `MainSceneController` 的 `@property` 字段引用。
+- 已把 `BackgroundRoot`、`CoreHudRoot`、`SheepArtAnchor`、`SheepStatusRoot` 和 `DebugControlsRoot` 作为固定根节点写入 `MainScene.scene`，并由 `MainSceneFoundationView` 的 `@property` 字段引用。
+- `CoreHudRoot` 已直接挂载 `MainSceneHudView`；稳定根节点已进入 Cocos 层级面板，HUD 内部文字/贴图、招聘弹窗和羊群表现仍由对应组件运行时创建，后续应继续迁移为 Prefab 或更细的场景节点绑定。
+- 已把 `MapSheepLayerRoot` 和 `RecruitmentPanelRoot` 写入 `MainScene.scene`，分别挂载 `MainSceneMapSheepLayerView` 与 `MainSceneRecruitmentPanelView`，并由 `MainSceneController` 的 `@property` 字段引用。
+- `MainSceneFoundationView` 不再销毁 `ContentRoot` 的其他子节点，避免刷新基础视图时误删场景挂载的地图羊群层和招聘弹窗层。
+- 本轮新增验证状态：`MainScene.scene` JSON 解析通过，组件引用结构校验通过，`npm.cmd run check` 通过，`npm.cmd test` 的 Node 逻辑测试 10 项通过。
 
 ## 7. 2026-05-17 琛ュ厖杩涘睍
 

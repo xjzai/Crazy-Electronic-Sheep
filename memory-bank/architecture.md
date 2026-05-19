@@ -412,3 +412,14 @@ flowchart TD
 - `MainSceneController` 不再直接持有背景资源路径、设计分辨率、布局缩放、基础 UI 节点创建包装或 `resources.load` 背景加载逻辑；这些表现层细节集中在基础视图组件中。
 - `MainSceneController` 当前继续保留启动协调、业务状态写入、招聘购买入口、自动产出回调和各运行时组件装配职责；后续可继续把招聘购买流程与格式化展示工具拆到更小模块。
 - 本轮不改变存档结构、玩法规则、资源数值或已接入素材，只调整主场景表现层与协调层的职责边界。
+
+## 15. 2026-05-19 主场景组件挂载方式调整
+
+- `MainScene.scene` 的 `ContentRoot` 现在不只挂载 `MainSceneController`，还直接挂载 `MainSceneFoundationView` 与 `MainSceneIdleProductionLoop`。
+- `MainSceneController` 通过 Cocos `@property` 序列化字段引用上述两个组件；运行时仍保留 `getComponent/addComponent` 兜底，避免旧场景资产或手动解绑时启动失败。
+- `ContentRoot` 下已预挂载 `BackgroundRoot`、`CoreHudRoot`、`SheepArtAnchor`、`SheepStatusRoot` 和 `DebugControlsRoot` 这批固定根节点；`MainSceneFoundationView` 通过 `@property` 引用它们，不再依赖 `removeAllChildren()` 重建整棵主场景节点。
+- `CoreHudRoot` 已直接挂载 `MainSceneHudView`；HUD 内部文字与贴图子节点仍由 HUD 组件运行时创建，后续可继续迁移成 Prefab 或更细的场景节点引用。
+- `ContentRoot` 下已新增 `MapSheepLayerRoot` 和 `RecruitmentPanelRoot`，分别直接挂载 `MainSceneMapSheepLayerView` 与 `MainSceneRecruitmentPanelView`；`MainSceneController` 通过 `@property` 引用这两个表现组件，不再默认运行时创建它们。
+- `MainSceneFoundationView` 的清理边界已收紧为只清理自己管理的根节点内部内容，不再销毁 `ContentRoot` 上其他场景挂载节点，避免误删地图羊群层和招聘弹窗层。
+- 当前切片仍保留运行时兜底：如果旧场景资产缺少上述节点或组件，控制器和基础视图会按同名节点查找或临时创建，保证预览不中断。
+- 本轮不改变 `GameState` 持久化结构、业务规则、资源数值或本地存档兼容性。

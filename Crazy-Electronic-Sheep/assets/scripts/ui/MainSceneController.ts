@@ -1,6 +1,8 @@
 ﻿import {
   _decorator,
   Component,
+  Node,
+  UITransform,
   Vec3,
 } from 'cc';
 import { bootGameState } from '../boot/bootCoordinator';
@@ -30,7 +32,19 @@ import { MainSceneMapSheepLayerView } from './MainSceneMapSheepLayerView';
 import { MainSceneRecruitmentPanelView } from './MainSceneRecruitmentPanelView';
 import { createLayerNode } from './uiNodeFactory';
 
-const { ccclass } = _decorator;
+const { ccclass, property } = _decorator;
+
+/**
+ * 地图羊群表现层在场景层级里的固定节点名。
+ * 新场景会直接挂载该节点；旧场景缺失时控制器按此名称兜底创建。
+ */
+const MAP_SHEEP_LAYER_NODE_NAME = 'MapSheepLayerRoot';
+
+/**
+ * 招聘入口与弹窗表现层在场景层级里的固定节点名。
+ * 该节点负责承载 `MainSceneRecruitmentPanelView` 生成的入口按钮和弹窗内容。
+ */
+const RECRUITMENT_PANEL_NODE_NAME = 'RecruitmentPanelRoot';
 
 @ccclass('MainSceneController')
 export class MainSceneController extends Component {
@@ -59,15 +73,47 @@ export class MainSceneController extends Component {
   private latestRecruitmentFeedback = '';
 
   /**
-   * 地图羊群与招聘弹窗属于当前主场景的附加视图层，
-   * 先作为控制器内部字段维护，后续若 UI 继续增大再拆到独立模块。
+   * 由 Cocos Inspector 挂载的地图羊群表现组件。
+   * 组件负责当前第一图羊实例节点、阴影、贴图和自动产出飘字。
    */
+  @property(MainSceneMapSheepLayerView)
   private mapSheepLayerView: MainSceneMapSheepLayerView | null = null;
+
+  /**
+   * 由 Cocos Inspector 挂载的招聘入口与弹窗组件。
+   * 控制器只提供状态和回调，具体按钮、弹窗和卡片节点由组件维护。
+   */
+  @property(MainSceneRecruitmentPanelView)
   private recruitmentPanelView: MainSceneRecruitmentPanelView | null = null;
+
+  /**
+   * 由 Cocos Inspector 挂载的自动产出组件。
+   * 保留运行时兜底创建，是为了避免旧场景资产或手动解绑时启动失败。
+   */
+  @property(MainSceneIdleProductionLoop)
   private idleProductionLoop: MainSceneIdleProductionLoop | null = null;
+
+  /**
+   * 由 Cocos Inspector 挂载的主场景基础视图组件。
+   * 当前仍负责动态生成 UI 骨架，后续会继续把稳定节点拆成场景引用。
+   */
+  @property(MainSceneFoundationView)
   private foundationView: MainSceneFoundationView | null = null;
+
   private currentViewportMetrics: MainSceneViewportMetrics | null = null;
   private currentLayoutScale = 1;
+
+  /**
+   * 地图羊群层是否已经完成本轮节点尺寸同步和资源预加载。
+   * 避免每次重绘羊群时重复预加载摸鱼能量飘字图标。
+   */
+  private isMapSheepLayerPrepared = false;
+
+  /**
+   * 招聘弹窗组件是否已经完成节点树构建。
+   * 业务刷新只更新文本和显隐，不重复重建整套弹窗节点。
+   */
+  private isRecruitmentPanelBuilt = false;
 
   /**
    * Cocos 生命周期入口。
@@ -83,6 +129,8 @@ export class MainSceneController extends Component {
   protected onDestroy(): void {
     this.idleProductionLoop?.stopLoop();
     this.idleProductionLoop = null;
+    this.isMapSheepLayerPrepared = false;
+    this.isRecruitmentPanelBuilt = false;
   }
 
   /**
@@ -143,27 +191,21 @@ export class MainSceneController extends Component {
   }
 
   /**
-   * 招聘入口与弹窗全部改为素材拼装，并保持在主界面安全区内。
-   */
-  /**
    * 创建或复用招聘弹窗组件。
    * 控制器只负责提供回调和当前运行态，具体 UI 节点由组件维护。
    */
   private ensureRecruitmentOverlay(sceneVisualNodes: MainSceneVisualNodes): void {
-    if (this.recruitmentPanelView?.node.isValid) {
+    if (this.isRecruitmentPanelBuilt && this.recruitmentPanelView?.node.isValid) {
       return;
     }
 
     const viewportMetrics = this.getCurrentViewportMetrics();
-    const recruitmentPanelRoot = createLayerNode(
-      this.node,
-      'RecruitmentPanelView',
+    const recruitmentPanelView = this.ensureRecruitmentPanelView(viewportMetrics);
+    this.configureSceneLayerNode(
+      recruitmentPanelView.node,
       new Vec3(0, 0, 25),
       viewportMetrics.width,
       viewportMetrics.height,
-    );
-    const recruitmentPanelView = recruitmentPanelRoot.addComponent(
-      MainSceneRecruitmentPanelView,
     );
     recruitmentPanelView.build({
       viewportWidth: viewportMetrics.width,
@@ -175,6 +217,7 @@ export class MainSceneController extends Component {
     });
 
     this.recruitmentPanelView = recruitmentPanelView;
+    this.isRecruitmentPanelBuilt = true;
     sceneVisualNodes.sheepStatusLabel.string = '招聘入口已就绪';
   }
 
@@ -231,23 +274,98 @@ export class MainSceneController extends Component {
     sceneVisualNodes: MainSceneVisualNodes,
   ): MainSceneMapSheepLayerView {
     if (this.mapSheepLayerView?.node.isValid) {
+      if (!this.isMapSheepLayerPrepared) {
+        const viewportMetrics = this.getCurrentViewportMetrics();
+        this.configureSceneLayerNode(
+          this.mapSheepLayerView.node,
+          new Vec3(0, 0, 5),
+          viewportMetrics.width,
+          viewportMetrics.height,
+        );
+        this.mapSheepLayerView.node.setSiblingIndex(
+          sceneVisualNodes.sheepArtAnchor.getSiblingIndex(),
+        );
+        this.mapSheepLayerView.preloadIdleEnergyFeedbackSpriteFrame();
+        this.isMapSheepLayerPrepared = true;
+      }
       return this.mapSheepLayerView;
     }
 
     const viewportMetrics = this.getCurrentViewportMetrics();
-    const mapSheepLayer = createLayerNode(
-      this.node,
-      'MapSheepLayer',
+    const mapSheepLayer =
+      this.node.getChildByName(MAP_SHEEP_LAYER_NODE_NAME) ??
+      this.node.getChildByName('MapSheepLayer') ??
+      createLayerNode(
+        this.node,
+        MAP_SHEEP_LAYER_NODE_NAME,
+        new Vec3(0, 0, 5),
+        viewportMetrics.width,
+        viewportMetrics.height,
+      );
+    this.configureSceneLayerNode(
+      mapSheepLayer,
       new Vec3(0, 0, 5),
       viewportMetrics.width,
       viewportMetrics.height,
     );
     mapSheepLayer.setSiblingIndex(sceneVisualNodes.sheepArtAnchor.getSiblingIndex());
 
-    this.mapSheepLayerView = mapSheepLayer.addComponent(MainSceneMapSheepLayerView);
+    this.mapSheepLayerView =
+      mapSheepLayer.getComponent(MainSceneMapSheepLayerView) ??
+      mapSheepLayer.addComponent(MainSceneMapSheepLayerView);
     this.mapSheepLayerView.preloadIdleEnergyFeedbackSpriteFrame();
+    this.isMapSheepLayerPrepared = true;
 
     return this.mapSheepLayerView;
+  }
+
+  /**
+   * 创建或复用招聘表现组件。
+   * 优先使用 `MainScene.scene` 中已经挂载的组件，其次按固定节点名查找，最后才创建兜底节点。
+   */
+  private ensureRecruitmentPanelView(
+    viewportMetrics: MainSceneViewportMetrics,
+  ): MainSceneRecruitmentPanelView {
+    if (this.recruitmentPanelView?.node.isValid) {
+      return this.recruitmentPanelView;
+    }
+
+    const recruitmentPanelRoot =
+      this.node.getChildByName(RECRUITMENT_PANEL_NODE_NAME) ??
+      this.node.getChildByName('RecruitmentPanelView') ??
+      createLayerNode(
+        this.node,
+        RECRUITMENT_PANEL_NODE_NAME,
+        new Vec3(0, 0, 25),
+        viewportMetrics.width,
+        viewportMetrics.height,
+      );
+    const recruitmentPanelView =
+      recruitmentPanelRoot.getComponent(MainSceneRecruitmentPanelView) ??
+      recruitmentPanelRoot.addComponent(MainSceneRecruitmentPanelView);
+    this.recruitmentPanelView = recruitmentPanelView;
+
+    return recruitmentPanelView;
+  }
+
+  /**
+   * 同步场景挂载层的父节点、位置和 UI 尺寸。
+   * 运行时只做适配，不改变组件归属，方便继续在 Inspector 里查看和调试。
+   */
+  private configureSceneLayerNode(
+    layerNode: Node,
+    position: Vec3,
+    width: number,
+    height: number,
+  ): void {
+    if (layerNode.parent !== this.node) {
+      layerNode.parent = this.node;
+    }
+
+    layerNode.setPosition(position);
+    const transform =
+      layerNode.getComponent(UITransform) ?? layerNode.addComponent(UITransform);
+    transform.setContentSize(width, height);
   }
 
   private formatRecruitmentFailureMessage(
@@ -361,13 +479,13 @@ export class MainSceneController extends Component {
    * 主控制器只提供状态读写与刷新回调，具体 `schedule/unschedule` 由组件维护。
    */
   private ensureIdleProductionLoop(): MainSceneIdleProductionLoop {
-    if (this.idleProductionLoop?.isValid && this.idleProductionLoop.node.isValid) {
-      return this.idleProductionLoop;
-    }
-
     const existingLoop = this.node.getComponent(MainSceneIdleProductionLoop);
     const idleProductionLoop =
-      existingLoop ?? this.node.addComponent(MainSceneIdleProductionLoop);
+      this.idleProductionLoop?.isValid && this.idleProductionLoop.node.isValid
+        ? this.idleProductionLoop
+        : existingLoop ?? this.node.addComponent(MainSceneIdleProductionLoop);
+
+    // Inspector 预挂载的组件也必须注入运行时依赖，否则 `startLoop` 会因未配置而跳过。
     idleProductionLoop.configure({
       getGameState: () => this.runtimeGameState,
       sheepDefinitions: GAME_CONFIG.sheepDefinitions,
