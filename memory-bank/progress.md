@@ -101,7 +101,7 @@
 
 接下来的直接开发入口应从以下能力继续推进：
 
-1. 继续把主场景启动、自动产出轮询和存档写回拆到应用协调层/服务层
+1. 继续把主场景启动协调和后续玩法入口拆到应用协调层/服务层
 2. 全局招聘机与按地图截断的购买范围
 3. 拖拽合成与 `020 -> 021` 跨地图解锁
 4. 第二图玩法闭环与存档扩展
@@ -117,9 +117,18 @@
 - 已明确禁止单体巨文件、God Object、混合 UI/状态/网络/存储职责
 - 已将当前“无数据库、仅本地存档”的事实写入 `memory-bank/architecture.md`
 - 已补充强制注释规则，要求代码中明确说明关键变量和函数的职责、输入输出与副作用
-## 6. 2026-05-17 琛ュ厖杩涘睍
+
+## 6. 2026-05-19 组件化重构继续进展
+
+- 已新增 `MainSceneIdleProductionLoop` 运行时组件，把自动产出 `schedule/unschedule`、整秒补齐、owner token 保护和 `settleIdleProduction` 调用从 `MainSceneController` 拆出。
+- 已新增 `gameStateSaveService`，集中封装当前主游戏存档 key；boot、清档、购买成功和自动产出写回不再在控制器里直接拼 `GAME_CONFIG.storageKey`。
+- `MainSceneController` 当前降到约 918 行，职责进一步收敛为启动、状态协调、组件装配和少量业务入口；自动产出循环已由独立 Cocos 组件持有。
+- 本轮未改动存档结构、玩法数值、购买规则和资源素材，只调整模块边界。
+- 验证状态：`npm run check` 通过，`npm test` 的 Node 逻辑测试 10 项通过。
+
+## 7. 2026-05-17 琛ュ厖杩涘睍
 
 - 宸插皢鐢ㄦ埛鎻愪緵鐨勪富鍦烘櫙鑳屾櫙鍥惧拰 `001` 缇婄礌鏉愭帴鍏?`Crazy-Electronic-Sheep/assets/resources/`锛屼富鍦烘櫙涓嶅啀鍙槸绋嬪簭缁樺埗鍗犱綅楠ㄦ灦銆?
 - 宸茬粡鍦?`MainSceneController` 涓惤鍦扳€滅湡瀹炶儗鏅?+ 001 瀹炰範缇婂叆鍦衡€濈殑杩愯鏃跺姞杞芥祦绋嬶紝鍚屾椂淇濈暀 `map_02` 閿佸畾楠ㄦ灦鍜?issue #2 淇℃伅灞傘€?
 - 宸插鍘熷 `001瀹炰範缇?.png` 鍋氫簡涓€娆￠潰鍚戝睍绀虹殑鐧藉簳閫忔槑鍖栧鐞嗭紝閬垮厤缇婄礌鏉愬湪鐪熷疄鍦烘櫙涓嚭鐜扮櫧鑹叉柟妗嗐€?
-- 楠岃瘉鐘舵€侊細`npm.cmd test` 4 椤归€氳繃锛涜祫婧愭枃浠躲€乣meta` 鍜岄€忔槑閫氶亾鏍￠獙宸查€氳繃锛?`npm.cmd run check` 浠嶈宸ョ▼鏃㈡湁鐨?Cocos TypeScript `lib` / `temp declarations` 闂闃绘尅锛屼笉鏄湰杞礌鏉愭帴鍏ュ崟鐙紩鍏ョ殑鏂伴敊璇€?
+- 历史验证状态：当时 `npm.cmd test` 4 项通过；资源文件、`.meta` 和透明通道校验已通过。`npm.cmd run check` 曾被 Cocos TypeScript `lib` / `temp declarations` 问题阻塞，已在 2026-05-19 通过补齐项目 `tsconfig.json` 检查配置解决。

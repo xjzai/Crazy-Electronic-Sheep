@@ -282,3 +282,8 @@ Cocos Creator 3.8.x
 - Vitest 官方文档：<https://vitest.dev/>
 - NestJS 官方文档：<https://docs.nestjs.com/>
 - Sentry JavaScript 文档：<https://docs.sentry.io/platforms/javascript/>
+
+## 10. 2026-05-19 TypeScript 检查配置说明
+
+- `Crazy-Electronic-Sheep/tsconfig.json` 继承 Cocos Creator 生成的 `temp/tsconfig.cocos.json`，项目自定义部分当前显式补充 `lib: ["ES2020", "DOM"]`，保证 `padStart`、`Object.values`、`Object.entries`、WebGPU 类型等声明在命令行类型检查中可见。
+- 当前同时启用 `skipLibCheck: true`，用于跳过 Cocos Creator 3.8.8 生成声明文件内部的编辑器/平台类型缺口；项目源码仍通过 `npm run check` 执行完整类型检查。

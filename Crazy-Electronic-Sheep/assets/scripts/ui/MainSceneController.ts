@@ -17,17 +17,20 @@ import { GAME_CONFIG } from '../config/gameConfig';
 import {
   buySheepOnCurrentMap,
   createCoreHudSnapshot,
-  settleIdleProduction,
   type BuyCurrentMapSheepFailureReason,
   type GameState,
 } from '../domain/gameStateSchema';
 import { setRuntimeGameState } from '../runtime/runtimeSession';
 import {
-  clearSerializedSave,
-  readSerializedSave,
-  writeSerializedSave,
-} from '../storage/localSaveRepository';
+  clearMainGameStateSave,
+  readMainGameSerializedSave,
+  writeMainGameStateSave,
+} from '../storage/gameStateSaveService';
 import { MainSceneHudView } from './MainSceneHudView';
+import {
+  MainSceneIdleProductionLoop,
+  type MainSceneIdleProductionSettleResult,
+} from './MainSceneIdleProductionLoop';
 import { MainSceneMapSheepLayerView } from './MainSceneMapSheepLayerView';
 import { MainSceneRecruitmentPanelView } from './MainSceneRecruitmentPanelView';
 import {
@@ -67,15 +70,6 @@ const SHEEP_001_DISPLAY_WIDTH = 131;
 const SHEEP_001_DISPLAY_HEIGHT = 120;
 
 /**
- * 自动产出轮询频率高于 1 秒，但结算始终按整秒推进。
- * 这样既能及时检查状态，又能保证 HUD 数字按秒跳动。
- */
-const IDLE_PRODUCTION_POLL_INTERVAL_SECONDS = 0.2;
-const IDLE_PRODUCTION_SETTLE_INTERVAL_MS = 1_000;
-const IDLE_PRODUCTION_LOOP_OWNER_KEY =
-  '__crazyElectronicSheepIdleProductionLoopOwnerToken';
-
-/**
  * 主场景渲染完成后需要持续刷新的关键节点引用。
  * UI 层只持有展示句柄，不持有业务真值。
  */
@@ -111,18 +105,6 @@ export class MainSceneController extends Component {
   private sceneVisualNodes: SceneVisualNodes | null = null;
 
   /**
-   * 最近一次已经完成整秒结算的时间戳。
-   * 轮询函数会基于它补齐遗漏秒数，避免预览卡顿时漏算资源。
-   */
-  private lastIdleProductionSettledAt = 0;
-
-  /**
-   * 预览热刷新时可能残留旧轮询实例，这个 token 用来判定当前谁才是有效 owner。
-   * 只有拿到 owner 的控制器才允许继续推进资源与写回存档。
-   */
-  private idleProductionLoopOwnerToken = '';
-
-  /**
    * 招聘弹窗显示状态独立于业务真值，
    * 这样关闭弹窗不会修改游戏状态，只影响当前可视层。
    */
@@ -140,6 +122,7 @@ export class MainSceneController extends Component {
    */
   private mapSheepLayerView: MainSceneMapSheepLayerView | null = null;
   private recruitmentPanelView: MainSceneRecruitmentPanelView | null = null;
+  private idleProductionLoop: MainSceneIdleProductionLoop | null = null;
   private currentLayoutScale = 1;
 
   /**
@@ -154,8 +137,8 @@ export class MainSceneController extends Component {
    * 场景销毁时停止轮询并释放 owner，避免旧实例继续写状态。
    */
   protected onDestroy(): void {
-    this.unschedule(this.pollIdleProduction);
-    this.releaseIdleProductionLoopOwnership();
+    this.idleProductionLoop?.stopLoop();
+    this.idleProductionLoop = null;
   }
 
   /**
@@ -165,9 +148,8 @@ export class MainSceneController extends Component {
   private async bootstrapAndRender(): Promise<void> {
     try {
       const bootResult = bootGameState({
-        readSerializedSave: () => readSerializedSave(GAME_CONFIG.storageKey),
-        writeSerializedSave: (gameState) =>
-          writeSerializedSave(GAME_CONFIG.storageKey, gameState),
+        readSerializedSave: readMainGameSerializedSave,
+        writeSerializedSave: writeMainGameStateSave,
       });
 
       this.runtimeGameState = bootResult.gameState;
@@ -185,8 +167,7 @@ export class MainSceneController extends Component {
     } catch (error) {
       this.runtimeGameState = null;
       this.sceneVisualNodes = null;
-      this.unschedule(this.pollIdleProduction);
-      this.releaseIdleProductionLoopOwnership();
+      this.idleProductionLoop?.stopLoop();
       console.error('[MainSceneController] boot failed', error);
       this.renderFatalError();
     }
@@ -515,7 +496,7 @@ export class MainSceneController extends Component {
       return;
     }
 
-    const didClear = clearSerializedSave(GAME_CONFIG.storageKey);
+    const didClear = clearMainGameStateSave();
     if (!didClear) {
       this.latestRecruitmentFeedback = '清档失败，请检查控制台日志';
       if (this.runtimeGameState) {
@@ -527,14 +508,13 @@ export class MainSceneController extends Component {
     }
 
     const bootResult = bootGameState({
-      readSerializedSave: () => readSerializedSave(GAME_CONFIG.storageKey),
-      writeSerializedSave: (gameState) =>
-        writeSerializedSave(GAME_CONFIG.storageKey, gameState),
+      readSerializedSave: readMainGameSerializedSave,
+      writeSerializedSave: writeMainGameStateSave,
     });
 
     this.runtimeGameState = bootResult.gameState;
     setRuntimeGameState(bootResult.gameState);
-    this.lastIdleProductionSettledAt = bootResult.gameState.updatedAt;
+    this.ensureIdleProductionLoop().resetSettledAt(bootResult.gameState.updatedAt);
     this.isRecruitmentModalVisible = false;
     this.latestRecruitmentFeedback = bootResult.didPersist
       ? '存档已清除，已重建新档'
@@ -584,90 +564,76 @@ export class MainSceneController extends Component {
     this.refreshRecruitmentOverlay(purchaseResult.gameState, this.sceneVisualNodes);
     void this.renderMapSheepSprites(purchaseResult.gameState, this.sceneVisualNodes);
 
-    const didPersist = writeSerializedSave(GAME_CONFIG.storageKey, purchaseResult.gameState);
-    if (!didPersist) {
-      console.warn('[MainSceneController] recruitment purchase was not persisted');
-    }
+    this.persistGameState(purchaseResult.gameState, 'recruitment purchase');
   };
 
   /**
-   * 启动自动产出轮询。
-   * 每次启动前先取消旧轮询，并注册新的 owner token，防止热刷新叠加资源。
+   * 创建或复用自动产出组件。
+   * 主控制器只提供状态读写与刷新回调，具体 `schedule/unschedule` 由组件维护。
+   */
+  private ensureIdleProductionLoop(): MainSceneIdleProductionLoop {
+    if (this.idleProductionLoop?.isValid && this.idleProductionLoop.node.isValid) {
+      return this.idleProductionLoop;
+    }
+
+    const existingLoop = this.node.getComponent(MainSceneIdleProductionLoop);
+    const idleProductionLoop =
+      existingLoop ?? this.node.addComponent(MainSceneIdleProductionLoop);
+    idleProductionLoop.configure({
+      getGameState: () => this.runtimeGameState,
+      sheepDefinitions: GAME_CONFIG.sheepDefinitions,
+      persistGameState: writeMainGameStateSave,
+      onSettled: this.handleIdleProductionSettled,
+      onPersistFailed: this.handleIdleProductionPersistFailed,
+    });
+
+    this.idleProductionLoop = idleProductionLoop;
+    return idleProductionLoop;
+  }
+
+  /**
+   * 启动自动产出组件。
+   * 控制器不再直接持有定时器细节，只保留主流程里的启动语义。
    */
   private startIdleProductionLoop(): void {
-    this.unschedule(this.pollIdleProduction);
-    this.idleProductionLoopOwnerToken = `${Date.now()}-${Math.random()}`;
-    this.claimIdleProductionLoopOwnership();
-    this.lastIdleProductionSettledAt = Date.now();
-    this.schedule(this.pollIdleProduction, IDLE_PRODUCTION_POLL_INTERVAL_SECONDS);
+    this.ensureIdleProductionLoop().startLoop();
   }
 
   /**
-   * 补齐已经过去的整秒数，并把资源与 HUD 一起推进。
+   * 自动产出组件完成结算后回到这里同步运行时状态与当前可见表现。
    */
-  private readonly pollIdleProduction = (): void => {
-    if (!this.runtimeGameState || !this.sceneVisualNodes || !this.isIdleProductionLoopOwner()) {
+  private readonly handleIdleProductionSettled = (
+    result: MainSceneIdleProductionSettleResult,
+  ): void => {
+    this.runtimeGameState = result.gameState;
+    setRuntimeGameState(result.gameState);
+
+    if (!this.sceneVisualNodes) {
       return;
     }
 
-    const now = Date.now();
-    const elapsedMs = now - this.lastIdleProductionSettledAt;
-    const settledSeconds = Math.floor(elapsedMs / IDLE_PRODUCTION_SETTLE_INTERVAL_MS);
-    if (settledSeconds <= 0) {
-      return;
-    }
-
-    const settledAt =
-      this.lastIdleProductionSettledAt +
-      settledSeconds * IDLE_PRODUCTION_SETTLE_INTERVAL_MS;
-    const nextGameState = settleIdleProduction(
-      this.runtimeGameState,
-      GAME_CONFIG.sheepDefinitions,
-      settledSeconds,
-      settledAt,
+    this.refreshCoreHud(result.gameState, this.sceneVisualNodes);
+    this.playVisibleMapSheepIdleProductionFeedback(
+      result.gameState,
+      result.settledSeconds,
     );
-
-    this.lastIdleProductionSettledAt = settledAt;
-    this.runtimeGameState = nextGameState;
-    setRuntimeGameState(nextGameState);
-    this.refreshCoreHud(nextGameState, this.sceneVisualNodes);
-    this.playVisibleMapSheepIdleProductionFeedback(nextGameState, settledSeconds);
-
-    const didPersist = writeSerializedSave(GAME_CONFIG.storageKey, nextGameState);
-    if (!didPersist) {
-      console.warn('[MainSceneController] idle production tick was not persisted');
-    }
   };
 
   /**
-   * 声明当前控制器为唯一允许推进自动产出的 owner。
+   * 自动产出存档失败时保持游戏继续运行，只在控制台保留可排查信号。
    */
-  private claimIdleProductionLoopOwnership(): void {
-    const runtimeGlobal = globalThis as typeof globalThis & {
-      [IDLE_PRODUCTION_LOOP_OWNER_KEY]?: string;
-    };
-    runtimeGlobal[IDLE_PRODUCTION_LOOP_OWNER_KEY] = this.idleProductionLoopOwnerToken;
-  }
+  private readonly handleIdleProductionPersistFailed = (): void => {
+    console.warn('[MainSceneController] idle production tick was not persisted');
+  };
 
   /**
-   * 判断当前控制器是否仍然持有资源推进权限。
+   * 统一写回当前主游戏状态。
+   * `context` 只用于日志定位，不参与业务逻辑。
    */
-  private isIdleProductionLoopOwner(): boolean {
-    const runtimeGlobal = globalThis as typeof globalThis & {
-      [IDLE_PRODUCTION_LOOP_OWNER_KEY]?: string;
-    };
-    return runtimeGlobal[IDLE_PRODUCTION_LOOP_OWNER_KEY] === this.idleProductionLoopOwnerToken;
-  }
-
-  /**
-   * 释放当前 owner，避免旧实例长期占用全局锁。
-   */
-  private releaseIdleProductionLoopOwnership(): void {
-    const runtimeGlobal = globalThis as typeof globalThis & {
-      [IDLE_PRODUCTION_LOOP_OWNER_KEY]?: string;
-    };
-    if (runtimeGlobal[IDLE_PRODUCTION_LOOP_OWNER_KEY] === this.idleProductionLoopOwnerToken) {
-      delete runtimeGlobal[IDLE_PRODUCTION_LOOP_OWNER_KEY];
+  private persistGameState(gameState: GameState, context: string): void {
+    const didPersist = writeMainGameStateSave(gameState);
+    if (!didPersist) {
+      console.warn(`[MainSceneController] ${context} was not persisted`);
     }
   }
 

@@ -398,3 +398,10 @@ flowchart TD
 - 招聘入口与招聘弹窗已拆为 `MainSceneRecruitmentPanelView` 运行时组件，负责招聘按钮、弹窗遮罩、招聘卡片、翻页占位、容量文案和招聘反馈展示；购买业务仍由 `MainSceneController` 调用领域服务执行。
 - 通用 UI 节点创建能力已抽到 `uiNodeFactory`，为后续把招聘弹窗、图鉴、科技面板继续拆成独立 Cocos 组件提供共用基础。
 - 本轮重构不改变存档结构、不改变购买规则、不改变自动产出规则，只调整表现层模块边界。
+
+## 13. 2026-05-19 自动产出与存档服务拆分
+
+- 自动产出轮询已从 `MainSceneController` 拆为 `MainSceneIdleProductionLoop` 运行时组件；该组件负责 `schedule/unschedule`、整秒补齐、热刷新 owner token 保护、调用领域层 `settleIdleProduction`，并通过回调把新状态交回主场景协调者。
+- `MainSceneController` 不再直接保存自动产出的最近结算时间戳，也不再直接持有轮询 owner token；控制器只负责启动自动产出组件、接收结算结果、刷新 HUD 和触发当前地图羊群飘字。
+- 当前主游戏本地存档 key 已集中到 `gameStateSaveService`；主场景 boot、清档、购买成功和自动产出写回都通过这个服务读写，避免 UI/协调层到处直接拼 `GAME_CONFIG.storageKey`。
+- 本轮没有改变 `GameState` 持久化结构、自动产出数值规则、购买规则或离线收益边界；变化只发生在应用协调层、运行时组件边界和存档服务入口。
