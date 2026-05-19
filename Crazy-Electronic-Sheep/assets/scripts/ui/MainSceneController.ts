@@ -8,7 +8,6 @@
   resources,
   Sprite,
   SpriteFrame,
-  UIOpacity,
   UITransform,
   Vec3,
   view,
@@ -18,7 +17,6 @@ import { GAME_CONFIG } from '../config/gameConfig';
 import {
   buySheepOnCurrentMap,
   createCoreHudSnapshot,
-  getMapSheepInstances,
   settleIdleProduction,
   type BuyCurrentMapSheepFailureReason,
   type GameState,
@@ -31,6 +29,7 @@ import {
 } from '../storage/localSaveRepository';
 import { MainSceneHudView } from './MainSceneHudView';
 import { MainSceneMapSheepLayerView } from './MainSceneMapSheepLayerView';
+import { MainSceneRecruitmentPanelView } from './MainSceneRecruitmentPanelView';
 import {
   createEllipse as createUiEllipse,
   createLabel as createUiLabel,
@@ -59,21 +58,6 @@ const MAP_01_BACKGROUND_SOURCE_HEIGHT = 1672;
  * `resources` 目录中的真实贴图路径，运行时统一按 `spriteFrame` 子资源加载。
  */
 const MAP_01_BACKGROUND_RESOURCE = 'map_01/map_01_background/spriteFrame';
-const IDLE_ENERGY_ICON_RESOURCE = 'ui/idle_energy_icon/spriteFrame';
-const RECRUITMENT_MAIN_BUTTON_RESOURCE = 'ui/recruitment/recruitment_main_button/spriteFrame';
-const RECRUITMENT_MODAL_FRAME_RESOURCE = 'ui/recruitment/recruitment_modal_frame/spriteFrame';
-const RECRUITMENT_MODAL_TITLE_RESOURCE = 'ui/recruitment/recruitment_modal_title/spriteFrame';
-const RECRUITMENT_CLOSE_BUTTON_RESOURCE = 'ui/recruitment/recruitment_close_button/spriteFrame';
-const RECRUITMENT_LIST_ITEM_RESOURCE = 'ui/recruitment/recruitment_list_item/spriteFrame';
-const RECRUITMENT_PURCHASE_BUTTON_RESOURCE =
-  'ui/recruitment/recruitment_purchase_button/spriteFrame';
-const RECRUITMENT_PAGE_INDICATOR_RESOURCE =
-  'ui/recruitment/recruitment_page_indicator/spriteFrame';
-const RECRUITMENT_PAGE_PREV_RESOURCE = 'ui/recruitment/recruitment_page_prev/spriteFrame';
-const RECRUITMENT_PAGE_NEXT_RESOURCE = 'ui/recruitment/recruitment_page_next/spriteFrame';
-const RECRUITMENT_SHEEP_001_CARD_RESOURCE = 'sheep/recruitment/sheep_001_card/spriteFrame';
-const RECRUITMENT_SHEEP_003_CARD_RESOURCE = 'sheep/recruitment/sheep_003_card/spriteFrame';
-const RECRUITMENT_SHEEP_007_CARD_RESOURCE = 'sheep/recruitment/sheep_007_card/spriteFrame';
 
 /**
  * 赠送羊与其阴影的显示尺寸。
@@ -81,29 +65,6 @@ const RECRUITMENT_SHEEP_007_CARD_RESOURCE = 'sheep/recruitment/sheep_007_card/sp
  */
 const SHEEP_001_DISPLAY_WIDTH = 131;
 const SHEEP_001_DISPLAY_HEIGHT = 120;
-const RECRUITMENT_MAIN_BUTTON_SOURCE_WIDTH = 806;
-const RECRUITMENT_MAIN_BUTTON_SOURCE_HEIGHT = 850;
-const RECRUITMENT_MODAL_FRAME_SOURCE_WIDTH = 1086;
-const RECRUITMENT_MODAL_FRAME_SOURCE_HEIGHT = 1448;
-const RECRUITMENT_LIST_ITEM_SOURCE_WIDTH = 1329;
-const RECRUITMENT_LIST_ITEM_SOURCE_HEIGHT = 617;
-const RECRUITMENT_PURCHASE_BUTTON_SOURCE_WIDTH = 1339;
-const RECRUITMENT_PURCHASE_BUTTON_SOURCE_HEIGHT = 467;
-const RECRUITMENT_CLOSE_BUTTON_SOURCE_WIDTH = 705;
-const RECRUITMENT_CLOSE_BUTTON_SOURCE_HEIGHT = 726;
-const RECRUITMENT_PAGE_PREV_SOURCE_WIDTH = 523;
-const RECRUITMENT_PAGE_PREV_SOURCE_HEIGHT = 847;
-const RECRUITMENT_PAGE_NEXT_SOURCE_WIDTH = 453;
-const RECRUITMENT_PAGE_NEXT_SOURCE_HEIGHT = 833;
-const RECRUITMENT_PAGE_INDICATOR_SOURCE_WIDTH = 2048;
-const RECRUITMENT_PAGE_INDICATOR_SOURCE_HEIGHT = 512;
-const RECRUITMENT_SHEEP_001_CARD_SOURCE_WIDTH = 949;
-const RECRUITMENT_SHEEP_001_CARD_SOURCE_HEIGHT = 869;
-const RECRUITMENT_SHEEP_003_CARD_SOURCE_WIDTH = 1122;
-const RECRUITMENT_SHEEP_003_CARD_SOURCE_HEIGHT = 1402;
-const RECRUITMENT_SHEEP_007_CARD_SOURCE_WIDTH = 941;
-const RECRUITMENT_SHEEP_007_CARD_SOURCE_HEIGHT = 1672;
-const SECONDARY_RECRUITMENT_PREVIEW_SHEEP_ID = '007';
 
 /**
  * 自动产出轮询频率高于 1 秒，但结算始终按整秒推进。
@@ -178,19 +139,7 @@ export class MainSceneController extends Component {
    * 先作为控制器内部字段维护，后续若 UI 继续增大再拆到独立模块。
    */
   private mapSheepLayerView: MainSceneMapSheepLayerView | null = null;
-  private recruitmentModalRoot: Node | null = null;
-  private recruitmentSheepNameLabel: Label | null = null;
-  private recruitmentIdleProductionLabel: Label | null = null;
-  private recruitmentPriceLabel: Label | null = null;
-  private recruitmentCapacityLabel: Label | null = null;
-  private recruitmentFeedbackLabel: Label | null = null;
-  private recruitmentPurchaseButtonLabel: Label | null = null;
-  private recruitmentPrimaryCardArtAnchor: Node | null = null;
-  private recruitmentSecondarySheepNameLabel: Label | null = null;
-  private recruitmentSecondaryIdleProductionLabel: Label | null = null;
-  private recruitmentSecondaryPriceLabel: Label | null = null;
-  private recruitmentSecondaryPurchaseButtonLabel: Label | null = null;
-  private recruitmentSecondaryCardArtAnchor: Node | null = null;
+  private recruitmentPanelView: MainSceneRecruitmentPanelView | null = null;
   private currentLayoutScale = 1;
 
   /**
@@ -426,662 +375,72 @@ export class MainSceneController extends Component {
   /**
    * 招聘入口与弹窗全部改为素材拼装，并保持在主界面安全区内。
    */
+  /**
+   * 创建或复用招聘弹窗组件。
+   * 控制器只负责提供回调和当前运行态，具体 UI 节点由组件维护。
+   */
   private ensureRecruitmentOverlay(sceneVisualNodes: SceneVisualNodes): void {
-    if (this.recruitmentModalRoot?.isValid) {
+    if (this.recruitmentPanelView?.node.isValid) {
       return;
     }
 
     const viewportMetrics = this.getViewportMetrics();
-    const scaleLayout = this.createLayoutScaler(this.currentLayoutScale);
-    const recruitButtonWidth = Math.min(
-      scaleLayout(170),
-      Math.round(viewportMetrics.width * 0.24),
-    );
-    const recruitButtonHeight = this.calculateHeightByWidth(
-      recruitButtonWidth,
-      RECRUITMENT_MAIN_BUTTON_SOURCE_WIDTH,
-      RECRUITMENT_MAIN_BUTTON_SOURCE_HEIGHT,
-    );
-    const recruitButtonX =
-      Math.round(viewportMetrics.width / 2) - scaleLayout(18) - Math.round(recruitButtonWidth / 2);
-    const recruitButtonY = Math.max(
-      -Math.round(viewportMetrics.height / 2) +
-        Math.round(recruitButtonHeight / 2) +
-        scaleLayout(36),
-      -Math.round(viewportMetrics.height * 0.24),
-    );
-    const recruitButtonRoot = this.createLayerNode(
+    const recruitmentPanelRoot = this.createLayerNode(
       this.node,
-      'RecruitButton',
-      new Vec3(recruitButtonX, recruitButtonY, 20),
-      recruitButtonWidth,
-      recruitButtonHeight,
-    );
-    this.attachSpriteByResource(
-      recruitButtonRoot,
-      'RecruitButtonSprite',
-      RECRUITMENT_MAIN_BUTTON_RESOURCE,
-      new Vec3(0, 0, 0),
-      recruitButtonWidth,
-      recruitButtonHeight,
-    );
-    recruitButtonRoot.on(Node.EventType.TOUCH_END, this.toggleRecruitmentModal, this);
-
-    const modalScale = Math.min(
-      (viewportMetrics.width - scaleLayout(56)) / RECRUITMENT_MODAL_FRAME_SOURCE_WIDTH,
-      (viewportMetrics.height - scaleLayout(150)) / RECRUITMENT_MODAL_FRAME_SOURCE_HEIGHT,
-    );
-    const modalWidth = Math.round(RECRUITMENT_MODAL_FRAME_SOURCE_WIDTH * modalScale);
-    const modalHeight = Math.round(RECRUITMENT_MODAL_FRAME_SOURCE_HEIGHT * modalScale);
-    const modalRoot = this.createLayerNode(
-      this.node,
-      'RecruitmentModalRoot',
-      new Vec3(0, 0, 30),
+      'RecruitmentPanelView',
+      new Vec3(0, 0, 25),
       viewportMetrics.width,
       viewportMetrics.height,
     );
-    modalRoot.active = false;
-    modalRoot.on(Node.EventType.TOUCH_END, (event) => {
-      event.propagationStopped = true;
+    const recruitmentPanelView = recruitmentPanelRoot.addComponent(
+      MainSceneRecruitmentPanelView,
+    );
+    recruitmentPanelView.build({
+      viewportWidth: viewportMetrics.width,
+      viewportHeight: viewportMetrics.height,
+      layoutScale: this.currentLayoutScale,
+      onToggleModal: this.toggleRecruitmentModal,
+      onPurchase: this.handleRecruitmentPurchase,
+      onUnavailableAction: this.handleUnavailableRecruitmentAction,
     });
 
-    const modalMask = this.createRect(
-      modalRoot,
-      'RecruitmentModalMask',
-      new Vec3(0, 0, 0),
-      viewportMetrics.width,
-      viewportMetrics.height,
-      new Color(12, 18, 18, 190),
-      new Color(12, 18, 18, 0),
-    );
-    modalMask.on(Node.EventType.TOUCH_END, this.toggleRecruitmentModal, this);
-
-    const recruitmentPanel = this.createLayerNode(
-      modalRoot,
-      'RecruitmentPanel',
-      new Vec3(0, scaleLayout(-18), 1),
-      modalWidth,
-      modalHeight,
-    );
-    recruitmentPanel.on(Node.EventType.TOUCH_END, (event) => {
-      event.propagationStopped = true;
-    });
-    this.attachSpriteByResource(
-      recruitmentPanel,
-      'RecruitmentPanelFrame',
-      RECRUITMENT_MODAL_FRAME_RESOURCE,
-      new Vec3(0, 0, 0),
-      modalWidth,
-      modalHeight,
-    );
-
-    const titleWidth = Math.round(modalWidth * 0.65);
-    const titleHeight = this.calculateHeightByWidth(titleWidth, 2048, 640);
-    this.attachSpriteByResource(
-      recruitmentPanel,
-      'RecruitmentTitleSprite',
-      RECRUITMENT_MODAL_TITLE_RESOURCE,
-      new Vec3(-10, Math.round(modalHeight / 2) - Math.round(modalHeight * 0.061), 2),
-      titleWidth,
-      titleHeight,
-      1,
-    );
-
-    const closeButtonWidth = Math.round(modalWidth * 0.15);
-    const closeButtonHeight = this.calculateHeightByWidth(
-      closeButtonWidth,
-      RECRUITMENT_CLOSE_BUTTON_SOURCE_WIDTH,
-      RECRUITMENT_CLOSE_BUTTON_SOURCE_HEIGHT,
-    );
-    const closeButtonRoot = this.createLayerNode(
-      recruitmentPanel,
-      'RecruitmentCloseButton',
-      new Vec3(
-        Math.round(modalWidth / 2) - Math.round(closeButtonWidth * 0.53),
-        Math.round(modalHeight / 2) - Math.round(modalHeight * 0.07),
-        2,
-      ),
-      closeButtonWidth,
-      closeButtonHeight,
-    );
-    this.attachSpriteByResource(
-      closeButtonRoot,
-      'RecruitmentCloseButtonSprite',
-      RECRUITMENT_CLOSE_BUTTON_RESOURCE,
-      new Vec3(0, 0, 0),
-      closeButtonWidth,
-      closeButtonHeight,
-    );
-    closeButtonRoot.on(Node.EventType.TOUCH_END, this.toggleRecruitmentModal, this);
-
-    const cardWidth = Math.round(modalWidth * 0.82);
-    const cardHeight = this.calculateHeightByWidth(
-      cardWidth,
-      RECRUITMENT_LIST_ITEM_SOURCE_WIDTH,
-      RECRUITMENT_LIST_ITEM_SOURCE_HEIGHT,
-    );
-    const primaryCardY = Math.round(modalHeight * 0.17);
-    const secondaryCardY = -Math.round(modalHeight * 0.20);
-    const artAnchorWidth = Math.round(cardWidth * 0.26);
-    const artAnchorHeight = Math.round(cardHeight * 0.74);
-    const purchaseButtonWidth = Math.round(cardWidth * 0.50);
-    const purchaseButtonHeight = this.calculateHeightByWidth(
-      purchaseButtonWidth,
-      RECRUITMENT_PURCHASE_BUTTON_SOURCE_WIDTH,
-      RECRUITMENT_PURCHASE_BUTTON_SOURCE_HEIGHT,
-    );
-    const purchaseButtonIconSize = Math.round(purchaseButtonHeight * 0.8);
-
-    /**
-     * 两张招聘卡必须共用同一套结构和排版比例，
-     * 这样第一张调完后，第二张会自然跟上，不再出现“上面改了、下面没改”的分叉。
-     */
-    const createRecruitmentCard = (
-      cardNodeName: string,
-      cardY: number,
-      artNodeName: string,
-      previewSheepId: string,
-      buttonOpacity: number,
-      onTouchEnd: () => void,
-    ): {
-      artAnchor: Node;
-      sheepNameLabel: Label;
-      idleProductionLabel: Label;
-      priceLabel: Label;
-      purchaseButtonLabel: Label;
-    } => {
-      const cardRoot = this.createLayerNode(
-        recruitmentPanel,
-        cardNodeName,
-        new Vec3(0, cardY, 2),
-        cardWidth,
-        cardHeight,
-      );
-      this.attachSpriteByResource(
-        cardRoot,
-        `${cardNodeName}Sprite`,
-        RECRUITMENT_LIST_ITEM_RESOURCE,
-        new Vec3(0, 0, 0),
-        cardWidth,
-        cardHeight,
-      );
-
-      const artAnchor = this.createLayerNode(
-        cardRoot,
-        `${cardNodeName}ArtAnchor`,
-        new Vec3(-Math.round(cardWidth * 0.24), 0, 1),
-        artAnchorWidth,
-        artAnchorHeight,
-      );
-      const artDefinition = this.getRecruitmentCardArtResource(previewSheepId);
-      this.attachRecruitmentCardArt(
-        artAnchor,
-        artNodeName,
-        artDefinition.resourcePath,
-        artDefinition.sourceWidth,
-        artDefinition.sourceHeight,
-        artAnchorWidth,
-        artAnchorHeight,
-      );
-
-      const sheepNameLabel = this.createLabel(
-        cardRoot,
-        `${cardNodeName}SheepNameLabel`,
-        `${previewSheepId} 预览羊`,
-        Math.max(18, Math.round(cardHeight * 1)),
-        Math.round(cardWidth * 0.5),
-        Math.round(cardHeight * 0.15),
-        new Vec3(Math.round(cardWidth * 0.25), Math.round(cardHeight * 0.3), 1),
-        new Color(72, 102, 33, 255),
-        Label.HorizontalAlign.LEFT,
-        true,
-      );
-      this.attachSpriteByResource(
-        cardRoot,
-        `${cardNodeName}IdleIcon`,
-        IDLE_ENERGY_ICON_RESOURCE,
-        new Vec3(Math.round(cardWidth * 0.10), Math.round(cardHeight * 0.1), 1),
-        Math.round(cardHeight * 0.15),
-        Math.round(cardHeight * 0.15),
-        1,
-      );
-      const idleProductionLabel = this.createLabel(
-        cardRoot,
-        `${cardNodeName}IdleProductionLabel`,
-        '+1/秒',
-        Math.max(16, Math.round(cardHeight * 1)),
-        Math.round(cardWidth * 0.24),
-        Math.round(cardHeight * 0.10),
-        new Vec3(Math.round(cardWidth * 0.27), Math.round(cardHeight * 0.1), 1),
-        new Color(132, 112, 42, 255),
-        Label.HorizontalAlign.LEFT,
-        true,
-      );
-      const priceLabel = this.createLabel(
-        cardRoot,
-        `${cardNodeName}PriceLabel`,
-        '消耗 10',
-        Math.max(14, Math.round(cardHeight * 0.08)),
-        Math.round(cardWidth * 0.36),
-        Math.round(cardHeight * 0.10),
-        new Vec3(Math.round(cardWidth * 0.16), -Math.round(cardHeight * 0.20), 1),
-        new Color(112, 93, 44, 255),
-        Label.HorizontalAlign.LEFT,
-        true,
-      );
-
-      const purchaseButtonRoot = this.createLayerNode(
-        cardRoot,
-        `${cardNodeName}PurchaseButton`,
-        new Vec3(
-          Math.round(cardWidth * 0.20),
-          -Math.round(cardHeight * 0.22),
-          1,
-        ),
-        purchaseButtonWidth,
-        purchaseButtonHeight,
-      );
-      this.attachSpriteByResource(
-        purchaseButtonRoot,
-        `${cardNodeName}PurchaseButtonSprite`,
-        RECRUITMENT_PURCHASE_BUTTON_RESOURCE,
-        new Vec3(0, 0, 0),
-        purchaseButtonWidth,
-        purchaseButtonHeight,
-      );
-      if (buttonOpacity < 255) {
-        purchaseButtonRoot.addComponent(UIOpacity).opacity = buttonOpacity;
-      }
-      this.attachSpriteByResource(
-        purchaseButtonRoot,
-        `${cardNodeName}PurchaseButtonIcon`,
-        IDLE_ENERGY_ICON_RESOURCE,
-        new Vec3(-Math.round(purchaseButtonWidth * 0.33), 6, 1),
-        purchaseButtonIconSize,
-        purchaseButtonIconSize,
-        1,
-      );
-      const purchaseButtonLabel = this.createLabel(
-        purchaseButtonRoot,
-        `${cardNodeName}PurchaseButtonLabel`,
-        '购买 10',
-        Math.max(16, Math.round(purchaseButtonHeight * 0.35)),
-        Math.round(purchaseButtonWidth * 0.68),
-        Math.round(purchaseButtonHeight * 0.52),
-        new Vec3(Math.round(purchaseButtonWidth * 0.2), 3, 1),
-        new Color(255, 251, 232, 255),
-        Label.HorizontalAlign.LEFT,
-        true,
-      );
-      purchaseButtonRoot.on(Node.EventType.TOUCH_END, onTouchEnd);
-
-      return {
-        artAnchor,
-        sheepNameLabel,
-        idleProductionLabel,
-        priceLabel,
-        purchaseButtonLabel,
-      };
-    };
-
-    const primaryCardControls = createRecruitmentCard(
-      'RecruitmentPrimaryCard',
-      primaryCardY,
-      'RecruitmentPrimaryCardArt',
-      '001',
-      255,
-      this.handleRecruitmentPurchase,
-    );
-    this.recruitmentPrimaryCardArtAnchor = primaryCardControls.artAnchor;
-    this.recruitmentSheepNameLabel = primaryCardControls.sheepNameLabel;
-    this.recruitmentIdleProductionLabel = primaryCardControls.idleProductionLabel;
-    this.recruitmentPriceLabel = primaryCardControls.priceLabel;
-    this.recruitmentPurchaseButtonLabel = primaryCardControls.purchaseButtonLabel;
-
-    const secondaryCardControls = createRecruitmentCard(
-      'RecruitmentSecondaryCard',
-      secondaryCardY,
-      'RecruitmentSecondaryCardArt',
-      SECONDARY_RECRUITMENT_PREVIEW_SHEEP_ID,
-      190,
-      () => {
-        this.latestRecruitmentFeedback = '当前版本仅开放第一档招聘';
-        if (this.runtimeGameState && this.sceneVisualNodes) {
-          this.refreshRecruitmentOverlay(this.runtimeGameState, this.sceneVisualNodes);
-        }
-      },
-    );
-    this.recruitmentSecondaryCardArtAnchor = secondaryCardControls.artAnchor;
-    this.recruitmentSecondarySheepNameLabel = secondaryCardControls.sheepNameLabel;
-    this.recruitmentSecondaryIdleProductionLabel =
-      secondaryCardControls.idleProductionLabel;
-    this.recruitmentSecondaryPriceLabel = secondaryCardControls.priceLabel;
-    this.recruitmentSecondaryPurchaseButtonLabel =
-      secondaryCardControls.purchaseButtonLabel;
-
-    const pageButtonY = Math.round((primaryCardY + secondaryCardY) / 2);
-    const pageButtonWidth = Math.round(modalWidth * 0.08);
-    const prevButtonHeight = this.calculateHeightByWidth(
-      pageButtonWidth,
-      RECRUITMENT_PAGE_PREV_SOURCE_WIDTH,
-      RECRUITMENT_PAGE_PREV_SOURCE_HEIGHT,
-    );
-    const nextButtonHeight = this.calculateHeightByWidth(
-      pageButtonWidth,
-      RECRUITMENT_PAGE_NEXT_SOURCE_WIDTH,
-      RECRUITMENT_PAGE_NEXT_SOURCE_HEIGHT,
-    );
-    const prevButtonRoot = this.createLayerNode(
-      recruitmentPanel,
-      'RecruitmentPrevPageButton',
-      new Vec3(-Math.round(modalWidth * 0.48), pageButtonY, 2),
-      pageButtonWidth,
-      prevButtonHeight,
-    );
-    this.attachSpriteByResource(
-      prevButtonRoot,
-      'RecruitmentPrevPageButtonSprite',
-      RECRUITMENT_PAGE_PREV_RESOURCE,
-      new Vec3(0, 0, 0),
-      pageButtonWidth,
-      prevButtonHeight,
-    );
-    const nextButtonRoot = this.createLayerNode(
-      recruitmentPanel,
-      'RecruitmentNextPageButton',
-      new Vec3(Math.round(modalWidth * 0.46), pageButtonY, 2),
-      pageButtonWidth,
-      nextButtonHeight,
-    );
-    this.attachSpriteByResource(
-      nextButtonRoot,
-      'RecruitmentNextPageButtonSprite',
-      RECRUITMENT_PAGE_NEXT_RESOURCE,
-      new Vec3(0, 0, 0),
-      pageButtonWidth,
-      nextButtonHeight,
-    );
-    prevButtonRoot.on(Node.EventType.TOUCH_END, () => {
-      this.latestRecruitmentFeedback = '当前页只开放第一档招聘';
-      if (this.runtimeGameState && this.sceneVisualNodes) {
-        this.refreshRecruitmentOverlay(this.runtimeGameState, this.sceneVisualNodes);
-      }
-    });
-    nextButtonRoot.on(Node.EventType.TOUCH_END, () => {
-      this.latestRecruitmentFeedback = '当前页只开放第一档招聘';
-      if (this.runtimeGameState && this.sceneVisualNodes) {
-        this.refreshRecruitmentOverlay(this.runtimeGameState, this.sceneVisualNodes);
-      }
-    });
-
-    const indicatorWidth = Math.round(modalWidth * 0.18);
-    const indicatorHeight = this.calculateHeightByWidth(
-      indicatorWidth,
-      RECRUITMENT_PAGE_INDICATOR_SOURCE_WIDTH,
-      RECRUITMENT_PAGE_INDICATOR_SOURCE_HEIGHT,
-    );
-    this.attachSpriteByResource(
-      recruitmentPanel,
-      'RecruitmentPageIndicator',
-      RECRUITMENT_PAGE_INDICATOR_RESOURCE,
-      new Vec3(0, -Math.round(modalHeight / 2) + Math.round(modalHeight * 0.10), 2),
-      indicatorWidth,
-      indicatorHeight,
-      1,
-    );
-
-    this.recruitmentCapacityLabel = this.createLabel(
-      recruitmentPanel,
-      'RecruitmentCapacityLabel',
-      '当前羊数 1/20',
-      Math.max(13, scaleLayout(14)),
-      Math.round(modalWidth * 0.72),
-      Math.round(modalHeight * 0.05),
-      new Vec3(0, -Math.round(modalHeight / 2) + Math.round(modalHeight * 0.17), 2),
-      new Color(112, 93, 44, 255),
-      Label.HorizontalAlign.CENTER,
-      true,
-    );
-    this.recruitmentFeedbackLabel = this.createLabel(
-      recruitmentPanel,
-      'RecruitmentFeedbackLabel',
-      '当前地图第一档招聘已接入',
-      Math.max(13, scaleLayout(14)),
-      Math.round(modalWidth * 0.78),
-      Math.round(modalHeight * 0.08),
-      new Vec3(0, -Math.round(modalHeight / 2) + Math.round(modalHeight * 0.05), 2),
-      new Color(88, 69, 42, 255),
-      Label.HorizontalAlign.CENTER,
-      true,
-    );
-
-    this.recruitmentModalRoot = modalRoot;
+    this.recruitmentPanelView = recruitmentPanelView;
     sceneVisualNodes.sheepStatusLabel.string = '招聘入口已就绪';
   }
 
+  /**
+   * 刷新招聘弹窗视图并把组件返回的反馈文案同步到主场景状态条。
+   */
   private refreshRecruitmentOverlay(
     gameState: GameState,
     sceneVisualNodes: SceneVisualNodes,
   ): void {
-    const currentMapDefinition = GAME_CONFIG.maps[gameState.currentMapId];
-    const currentMapSheepCount = getMapSheepInstances(gameState, gameState.currentMapId).length;
-    const requestedSheepId = currentMapDefinition.defaultPurchasableSheepIds[0];
-    const fallbackMessage = requestedSheepId
-      ? `当前羊数 ${currentMapSheepCount}/${currentMapDefinition.maxSheepCapacity}`
-      : '当前地图招聘入口尚未开放';
-    const feedbackMessage = this.latestRecruitmentFeedback || fallbackMessage;
-
-    if (this.recruitmentModalRoot?.isValid) {
-      this.recruitmentModalRoot.active = this.isRecruitmentModalVisible;
-    }
-    this.refreshRecruitmentCardContent(
-      requestedSheepId,
-      {
-        artAnchor: this.recruitmentPrimaryCardArtAnchor,
-        artNodeName: 'RecruitmentPrimaryCardArt',
-        sheepNameLabel: this.recruitmentSheepNameLabel,
-        idleProductionLabel: this.recruitmentIdleProductionLabel,
-        priceLabel: this.recruitmentPriceLabel,
-        purchaseButtonLabel: this.recruitmentPurchaseButtonLabel,
-      },
-      {
-        unavailableName: '当前地图未开放招聘',
-        unavailableIdleProduction: '--',
-        unavailablePrice: '当前地图暂未开放招聘',
-        unavailableButton: '暂未开放',
-        availablePricePrefix: '当前开放 · 消耗',
-        availableButtonPrefix: '购买',
-      },
-    );
-    this.refreshRecruitmentCardContent(
-      SECONDARY_RECRUITMENT_PREVIEW_SHEEP_ID,
-      {
-        artAnchor: this.recruitmentSecondaryCardArtAnchor,
-        artNodeName: 'RecruitmentSecondaryCardArt',
-        sheepNameLabel: this.recruitmentSecondarySheepNameLabel,
-        idleProductionLabel: this.recruitmentSecondaryIdleProductionLabel,
-        priceLabel: this.recruitmentSecondaryPriceLabel,
-        purchaseButtonLabel: this.recruitmentSecondaryPurchaseButtonLabel,
-      },
-      {
-        unavailableName: '后续档位',
-        unavailableIdleProduction: '--',
-        unavailablePrice: '当前版本仅开放第一档招聘',
-        unavailableButton: '敬请期待',
-        availablePricePrefix: '后续开放 · 消耗',
-        availableButtonPrefix: '购买',
-      },
-    );
-    if (this.recruitmentCapacityLabel) {
-      this.recruitmentCapacityLabel.string =
-        `当前羊数 ${currentMapSheepCount}/${currentMapDefinition.maxSheepCapacity}`;
-    }
-    if (this.recruitmentFeedbackLabel) {
-      this.recruitmentFeedbackLabel.string = feedbackMessage;
+    if (!this.recruitmentPanelView?.node.isValid) {
+      this.ensureRecruitmentOverlay(sceneVisualNodes);
     }
 
+    if (!this.recruitmentPanelView?.node.isValid) {
+      return;
+    }
+
+    const feedbackMessage = this.recruitmentPanelView.refresh({
+      gameState,
+      isModalVisible: this.isRecruitmentModalVisible,
+      latestFeedback: this.latestRecruitmentFeedback,
+      formatIdleEnergyValue: (value) => this.formatIdleEnergyValue(value),
+    });
     sceneVisualNodes.sheepStatusLabel.string = feedbackMessage;
   }
 
   /**
-   * 招聘卡的文案、数值和羊图统一走这里刷新。
-   * 两张卡共用同一套规则，避免布局一致但展示逻辑继续分叉。
+   * 招聘弹窗中暂未开放的按钮统一回到这里更新反馈。
    */
-  private refreshRecruitmentCardContent(
-    sheepId: string | undefined,
-    controls: {
-      artAnchor: Node | null;
-      artNodeName: string;
-      sheepNameLabel: Label | null;
-      idleProductionLabel: Label | null;
-      priceLabel: Label | null;
-      purchaseButtonLabel: Label | null;
-    },
-    copy: {
-      unavailableName: string;
-      unavailableIdleProduction: string;
-      unavailablePrice: string;
-      unavailableButton: string;
-      availablePricePrefix: string;
-      availableButtonPrefix: string;
-    },
-  ): void {
-    this.refreshRecruitmentCardArt(controls.artAnchor, controls.artNodeName, sheepId);
-
-    const sheepDefinition = sheepId ? GAME_CONFIG.sheepDefinitions[sheepId] : undefined;
-    if (!sheepId || !sheepDefinition) {
-      if (controls.sheepNameLabel) {
-        controls.sheepNameLabel.string = copy.unavailableName;
-      }
-      if (controls.idleProductionLabel) {
-        controls.idleProductionLabel.string = copy.unavailableIdleProduction;
-      }
-      if (controls.priceLabel) {
-        controls.priceLabel.string = copy.unavailablePrice;
-      }
-      if (controls.purchaseButtonLabel) {
-        controls.purchaseButtonLabel.string = copy.unavailableButton;
-      }
-      return;
+  private readonly handleUnavailableRecruitmentAction = (message: string): void => {
+    this.latestRecruitmentFeedback = message;
+    if (this.runtimeGameState && this.sceneVisualNodes) {
+      this.refreshRecruitmentOverlay(this.runtimeGameState, this.sceneVisualNodes);
     }
-
-    if (controls.sheepNameLabel) {
-      controls.sheepNameLabel.string = `${sheepId} ${sheepDefinition.displayName}`;
-    }
-    if (controls.idleProductionLabel) {
-      controls.idleProductionLabel.string = `+${this.formatIdleEnergyValue(
-        sheepDefinition.idleEnergyPerSecond,
-      )}/秒`;
-    }
-    if (controls.priceLabel) {
-      controls.priceLabel.string = `${copy.availablePricePrefix} ${this.formatIdleEnergyValue(
-        sheepDefinition.purchaseIdleEnergyCost,
-      )}`;
-    }
-    if (controls.purchaseButtonLabel) {
-      controls.purchaseButtonLabel.string = `${copy.availableButtonPrefix} ${this.formatIdleEnergyValue(
-        sheepDefinition.purchaseIdleEnergyCost,
-      )}`;
-    }
-  }
-
-  private refreshRecruitmentCardArt(
-    artAnchor: Node | null,
-    artNodeName: string,
-    requestedSheepId: string | undefined,
-  ): void {
-    if (!artAnchor?.isValid) {
-      return;
-    }
-
-    const artDefinition = this.getRecruitmentCardArtResource(requestedSheepId);
-    const artTransform = artAnchor.getComponent(UITransform);
-    this.attachRecruitmentCardArt(
-      artAnchor,
-      artNodeName,
-      artDefinition.resourcePath,
-      artDefinition.sourceWidth,
-      artDefinition.sourceHeight,
-      artTransform?.contentSize.width ?? 0,
-      artTransform?.contentSize.height ?? 0,
-    );
-  }
-
-  private getRecruitmentCardArtResource(requestedSheepId: string | undefined): {
-    resourcePath: string;
-    sourceWidth: number;
-    sourceHeight: number;
-  } {
-    switch (requestedSheepId) {
-      case '003':
-        return {
-          resourcePath: RECRUITMENT_SHEEP_003_CARD_RESOURCE,
-          sourceWidth: RECRUITMENT_SHEEP_003_CARD_SOURCE_WIDTH,
-          sourceHeight: RECRUITMENT_SHEEP_003_CARD_SOURCE_HEIGHT,
-        };
-      case '007':
-        return {
-          resourcePath: RECRUITMENT_SHEEP_007_CARD_RESOURCE,
-          sourceWidth: RECRUITMENT_SHEEP_007_CARD_SOURCE_WIDTH,
-          sourceHeight: RECRUITMENT_SHEEP_007_CARD_SOURCE_HEIGHT,
-        };
-      case '001':
-      default:
-        return {
-          resourcePath: RECRUITMENT_SHEEP_001_CARD_RESOURCE,
-          sourceWidth: RECRUITMENT_SHEEP_001_CARD_SOURCE_WIDTH,
-          sourceHeight: RECRUITMENT_SHEEP_001_CARD_SOURCE_HEIGHT,
-        };
-    }
-  }
-
-  private attachSpriteByResource(
-    parent: Node,
-    name: string,
-    resourcePath: string,
-    position: Vec3,
-    width: number,
-    height: number,
-    siblingIndex = 0,
-  ): void {
-    void this.loadSpriteFrame(resourcePath)
-      .then((spriteFrame) => {
-        if (!parent.isValid) {
-          return;
-        }
-
-        parent.getChildByName(name)?.destroy();
-        const sprite = this.createSpriteNode(parent, name, spriteFrame, position, width, height);
-        sprite.node.setSiblingIndex(siblingIndex);
-      })
-      .catch((error) => {
-        console.error(`[MainSceneController] sprite load failed: ${resourcePath}`, error);
-      });
-  }
-
-  private attachRecruitmentCardArt(
-    parent: Node,
-    name: string,
-    resourcePath: string,
-    sourceWidth: number,
-    sourceHeight: number,
-    maxWidth: number,
-    maxHeight: number,
-  ): void {
-    const artScale = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight);
-    const displayWidth = Math.round(sourceWidth * artScale);
-    const displayHeight = Math.round(sourceHeight * artScale);
-
-    this.attachSpriteByResource(
-      parent,
-      name,
-      resourcePath,
-      new Vec3(0, 0, 0),
-      displayWidth,
-      displayHeight,
-    );
-  }
-
+  };
   private async renderMapSheepSprites(
     gameState: GameState,
     sceneVisualNodes: SceneVisualNodes,

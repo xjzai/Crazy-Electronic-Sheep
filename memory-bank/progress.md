@@ -11,6 +11,7 @@
 - 已启动主场景组件化重构第一轮：
   - 新增 `MainSceneHudView`，把顶部 HUD 创建、贴图加载和文本刷新从 `MainSceneController` 拆出
   - 新增 `MainSceneMapSheepLayerView`，把第一图羊群渲染和自动产出飘字从 `MainSceneController` 拆出
+  - 新增 `MainSceneRecruitmentPanelView`，把招聘入口按钮、招聘弹窗、招聘卡片和反馈文案从 `MainSceneController` 拆出
   - 新增 `uiNodeFactory`，统一基础 UI 节点、文本、贴图、矩形、圆角底板和椭圆创建入口
   - `MainSceneController` 继续作为启动和流程协调入口，但表现层细节已开始向独立组件迁移
   - 本轮重构不改变玩法规则、存档结构或资源数值
@@ -100,7 +101,7 @@
 
 接下来的直接开发入口应从以下能力继续推进：
 
-1. 继续把招聘弹窗拆成独立 Cocos 组件，减少 `MainSceneController` 的 UI 负担
+1. 继续把主场景启动、自动产出轮询和存档写回拆到应用协调层/服务层
 2. 全局招聘机与按地图截断的购买范围
 3. 拖拽合成与 `020 -> 021` 跨地图解锁
 4. 第二图玩法闭环与存档扩展

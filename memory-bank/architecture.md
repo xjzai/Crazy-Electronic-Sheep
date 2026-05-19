@@ -395,5 +395,6 @@ flowchart TD
 - `MainSceneController` 仍然是 `MainScene.scene` 上的启动与应用协调入口，但不再直接持有顶部 HUD 与地图羊群的全部子节点细节。
 - 顶部 HUD 已拆为 `MainSceneHudView` 运行时组件，负责创建和刷新当前资源、全局总秒产、羊钻占位数值三类展示节点。
 - 第一图羊群表现已拆为 `MainSceneMapSheepLayerView` 运行时组件，负责当前第一图羊实例节点渲染、羊影子、羊贴图加载缓存和自动产出飘字反馈。
+- 招聘入口与招聘弹窗已拆为 `MainSceneRecruitmentPanelView` 运行时组件，负责招聘按钮、弹窗遮罩、招聘卡片、翻页占位、容量文案和招聘反馈展示；购买业务仍由 `MainSceneController` 调用领域服务执行。
 - 通用 UI 节点创建能力已抽到 `uiNodeFactory`，为后续把招聘弹窗、图鉴、科技面板继续拆成独立 Cocos 组件提供共用基础。
 - 本轮重构不改变存档结构、不改变购买规则、不改变自动产出规则，只调整表现层模块边界。
