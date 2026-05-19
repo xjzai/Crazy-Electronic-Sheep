@@ -122,7 +122,8 @@
 
 - 已新增 `MainSceneIdleProductionLoop` 运行时组件，把自动产出 `schedule/unschedule`、整秒补齐、owner token 保护和 `settleIdleProduction` 调用从 `MainSceneController` 拆出。
 - 已新增 `gameStateSaveService`，集中封装当前主游戏存档 key；boot、清档、购买成功和自动产出写回不再在控制器里直接拼 `GAME_CONFIG.storageKey`。
-- `MainSceneController` 当前降到约 918 行，职责进一步收敛为启动、状态协调、组件装配和少量业务入口；自动产出循环已由独立 Cocos 组件持有。
+- 已新增 `MainSceneFoundationView` 运行时组件，把 Canvas/Camera 尺寸同步、兜底背景、`map_01` 背景贴图、HUD 根节点、羊锚点、状态条、清档按钮和启动失败画面从 `MainSceneController` 拆出。
+- `MainSceneController` 当前降到约 523 行，职责进一步收敛为启动、状态协调、组件装配和少量业务入口；自动产出循环与基础场景视图已由独立 Cocos 组件持有。
 - 本轮未改动存档结构、玩法数值、购买规则和资源素材，只调整模块边界。
 - 验证状态：`npm run check` 通过，`npm test` 的 Node 逻辑测试 10 项通过。
 

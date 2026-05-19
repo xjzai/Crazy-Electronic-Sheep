@@ -1,16 +1,7 @@
 ﻿import {
   _decorator,
-  Camera,
-  Color,
   Component,
-  Label,
-  Node,
-  resources,
-  Sprite,
-  SpriteFrame,
-  UITransform,
   Vec3,
-  view,
 } from 'cc';
 import { bootGameState } from '../boot/bootCoordinator';
 import { GAME_CONFIG } from '../config/gameConfig';
@@ -26,69 +17,20 @@ import {
   readMainGameSerializedSave,
   writeMainGameStateSave,
 } from '../storage/gameStateSaveService';
-import { MainSceneHudView } from './MainSceneHudView';
+import {
+  MainSceneFoundationView,
+  type MainSceneViewportMetrics,
+  type MainSceneVisualNodes,
+} from './MainSceneFoundationView';
 import {
   MainSceneIdleProductionLoop,
   type MainSceneIdleProductionSettleResult,
 } from './MainSceneIdleProductionLoop';
 import { MainSceneMapSheepLayerView } from './MainSceneMapSheepLayerView';
 import { MainSceneRecruitmentPanelView } from './MainSceneRecruitmentPanelView';
-import {
-  createEllipse as createUiEllipse,
-  createLabel as createUiLabel,
-  createLayerNode as createUiLayerNode,
-  createRect as createUiRect,
-  createRoundedRect as createUiRoundedRect,
-  createSpriteNode as createUiSpriteNode,
-} from './uiNodeFactory';
+import { createLayerNode } from './uiNodeFactory';
 
 const { ccclass } = _decorator;
-
-/**
- * 主场景继续使用固定设计尺寸，保证顶部 HUD 与地图素材在竖屏下稳定对位。
- */
-const DESIGN_WIDTH = 1080;
-const DESIGN_HEIGHT = 1920;
-
-/**
- * 旧布局最初基于 `720x1280` 搭骨架，当前继续以它为缩放基准。
- */
-const LEGACY_LAYOUT_WIDTH = 720;
-const MAP_01_BACKGROUND_SOURCE_WIDTH = 941;
-const MAP_01_BACKGROUND_SOURCE_HEIGHT = 1672;
-
-/**
- * `resources` 目录中的真实贴图路径，运行时统一按 `spriteFrame` 子资源加载。
- */
-const MAP_01_BACKGROUND_RESOURCE = 'map_01/map_01_background/spriteFrame';
-
-/**
- * 赠送羊与其阴影的显示尺寸。
- * 这里保持小体量，避免在第一图空场景里显得过分拥挤。
- */
-const SHEEP_001_DISPLAY_WIDTH = 131;
-const SHEEP_001_DISPLAY_HEIGHT = 120;
-
-/**
- * 主场景渲染完成后需要持续刷新的关键节点引用。
- * UI 层只持有展示句柄，不持有业务真值。
- */
-type SceneVisualNodes = {
-  backgroundArtLayer: Node;
-  sheepArtAnchor: Node;
-  sheepStatusLabel: Label;
-  hudView: MainSceneHudView;
-};
-
-/**
- * 当前可视区域与旧布局缩放系数。
- * 背景、相机与 HUD 都基于这里的结果自适应到实际设备尺寸。
- */
-type ViewportMetrics = {
-  width: number;
-  height: number;
-  layoutScale: number;
-};
 
 @ccclass('MainSceneController')
 export class MainSceneController extends Component {
@@ -102,7 +44,7 @@ export class MainSceneController extends Component {
    * 场景内需要频繁刷新的 HUD 句柄。
    * 只更新文本，不重复重建整棵节点树。
    */
-  private sceneVisualNodes: SceneVisualNodes | null = null;
+  private sceneVisualNodes: MainSceneVisualNodes | null = null;
 
   /**
    * 招聘弹窗显示状态独立于业务真值，
@@ -123,6 +65,8 @@ export class MainSceneController extends Component {
   private mapSheepLayerView: MainSceneMapSheepLayerView | null = null;
   private recruitmentPanelView: MainSceneRecruitmentPanelView | null = null;
   private idleProductionLoop: MainSceneIdleProductionLoop | null = null;
+  private foundationView: MainSceneFoundationView | null = null;
+  private currentViewportMetrics: MainSceneViewportMetrics | null = null;
   private currentLayoutScale = 1;
 
   /**
@@ -177,140 +121,14 @@ export class MainSceneController extends Component {
    * 先渲染稳定的骨架层，确保真实贴图尚未加载时场景也可见。
    * 顶部 HUD 固定在屏幕顶部安全区内，因为当前地图可视范围就是整个屏幕。
    */
-  private renderFoundation(): SceneVisualNodes {
-    const viewportMetrics = this.getViewportMetrics();
-    const scaleLayout = this.createLayoutScaler(viewportMetrics.layoutScale);
-    this.currentLayoutScale = viewportMetrics.layoutScale;
-    const backgroundDisplayHeight = this.calculateHeightByWidth(
-      viewportMetrics.width,
-      MAP_01_BACKGROUND_SOURCE_WIDTH,
-      MAP_01_BACKGROUND_SOURCE_HEIGHT,
-    );
-    const mapVisibleHeight = Math.min(backgroundDisplayHeight, viewportMetrics.height);
-
-    const canvasNode = this.node.parent;
-    const canvasNodeTransform = canvasNode?.getComponent(UITransform);
-    if (canvasNodeTransform) {
-      canvasNodeTransform.setContentSize(viewportMetrics.width, viewportMetrics.height);
-    }
-
-    const sceneCamera = canvasNode?.getChildByName('Camera')?.getComponent(Camera);
-    if (sceneCamera) {
-      sceneCamera.orthoHeight = viewportMetrics.height / 2;
-    }
-
-    const canvasTransform = this.node.getComponent(UITransform);
-    if (canvasTransform) {
-      canvasTransform.setContentSize(viewportMetrics.width, viewportMetrics.height);
-    }
-
-    this.node.removeAllChildren();
-
-    this.createRect(
-      this.node,
-      'FallbackBackground',
-      new Vec3(0, 0, 0),
-      viewportMetrics.width,
-      viewportMetrics.height,
-      new Color(24, 34, 44, 255),
-      new Color(24, 34, 44, 255),
-    );
-
-    const backgroundArtLayer = this.createLayerNode(
-      this.node,
-      'BackgroundArtLayer',
-      new Vec3(0, 0, 0),
-      viewportMetrics.width,
-      backgroundDisplayHeight,
-    );
-
-    /**
-     * 顶部 HUD 已迁移到独立组件。
-     * 主控制器只负责创建组件节点并传入布局输入，不再持有 HUD 子节点细节。
-     */
-    const hudRoot = this.createLayerNode(
-      this.node,
-      'CoreHudView',
-      new Vec3(0, 0, 10),
-      viewportMetrics.width,
-      mapVisibleHeight,
-    );
-    const hudView = hudRoot.addComponent(MainSceneHudView);
-    hudView.build({
-      viewportWidth: viewportMetrics.width,
-      mapVisibleHeight,
-      layoutScale: viewportMetrics.layoutScale,
+  private renderFoundation(): MainSceneVisualNodes {
+    const buildResult = this.ensureFoundationView().build({
+      onClearSave: this.handleClearSave,
     });
+    this.currentViewportMetrics = buildResult.viewportMetrics;
+    this.currentLayoutScale = buildResult.viewportMetrics.layoutScale;
 
-    const sheepArtAnchor = this.createLayerNode(
-      this.node,
-      'SheepArtAnchor',
-      new Vec3(0, scaleLayout(-275), 0),
-      SHEEP_001_DISPLAY_WIDTH,
-      SHEEP_001_DISPLAY_HEIGHT,
-    );
-
-    const sheepStatusBadge = this.createRoundedRect(
-      this.node,
-      'SheepStatusBadge',
-      new Vec3(0, scaleLayout(-430), 0),
-      scaleLayout(320),
-      scaleLayout(44),
-      scaleLayout(22),
-      new Color(251, 252, 241, 230),
-      new Color(101, 133, 61, 255),
-      scaleLayout(3),
-    );
-    const sheepStatusLabel = this.createLabel(
-      sheepStatusBadge,
-      'SheepStatusLabel',
-      '正在加载 001 羊素材…',
-      scaleLayout(16),
-      scaleLayout(284),
-      scaleLayout(28),
-      new Vec3(0, 0, 0),
-      new Color(88, 69, 42, 255),
-    );
-
-    /**
-     * 测试期保留一个极简清档按钮，方便快速回到新档开局。
-     * 这里只触发正式清档接口与正式 boot 流程，不手改零散运行时字段。
-     */
-    const clearSaveButton = this.createRoundedRect(
-      this.node,
-      'ClearSaveButton',
-      new Vec3(
-        -Math.round(viewportMetrics.width / 2) + scaleLayout(84),
-        -Math.round(viewportMetrics.height / 2) + scaleLayout(68),
-        20,
-      ),
-      scaleLayout(128),
-      scaleLayout(46),
-      scaleLayout(18),
-      new Color(255, 244, 236, 245),
-      new Color(176, 88, 64, 255),
-      scaleLayout(3),
-    );
-    this.createLabel(
-      clearSaveButton,
-      'ClearSaveButtonLabel',
-      '清档重开',
-      scaleLayout(16),
-      scaleLayout(108),
-      scaleLayout(28),
-      new Vec3(0, 0, 0),
-      new Color(122, 56, 40, 255),
-      Label.HorizontalAlign.CENTER,
-      true,
-    );
-    clearSaveButton.on(Node.EventType.TOUCH_END, this.handleClearSave, this);
-
-    return {
-      backgroundArtLayer,
-      sheepArtAnchor,
-      sheepStatusLabel,
-      hudView,
-    };
+    return buildResult.sceneVisualNodes;
   }
 
   /**
@@ -319,38 +137,9 @@ export class MainSceneController extends Component {
    */
   private async hydrateSceneArt(
     _gameState: GameState,
-    sceneVisualNodes: SceneVisualNodes,
+    sceneVisualNodes: MainSceneVisualNodes,
   ): Promise<void> {
-    await Promise.all([
-      this.attachBackgroundSprite(sceneVisualNodes.backgroundArtLayer),
-      sceneVisualNodes.hudView.attachPanelSprites(),
-    ]);
-  }
-
-  /**
-   * 把 `map_01` 的真实背景图挂进全屏背景层。
-   */
-  private async attachBackgroundSprite(backgroundArtLayer: Node): Promise<void> {
-    const viewportMetrics = this.getViewportMetrics();
-    const backgroundDisplayHeight = this.calculateHeightByWidth(
-      viewportMetrics.width,
-      MAP_01_BACKGROUND_SOURCE_WIDTH,
-      MAP_01_BACKGROUND_SOURCE_HEIGHT,
-    );
-
-    try {
-      const spriteFrame = await this.loadSpriteFrame(MAP_01_BACKGROUND_RESOURCE);
-      this.createSpriteNode(
-        backgroundArtLayer,
-        'Map01BackgroundSprite',
-        spriteFrame,
-        new Vec3(0, 0, 0),
-        viewportMetrics.width,
-        backgroundDisplayHeight,
-      );
-    } catch (error) {
-      console.error('[MainSceneController] map_01 background load failed', error);
-    }
+    await this.ensureFoundationView().attachSceneArt(sceneVisualNodes);
   }
 
   /**
@@ -360,13 +149,13 @@ export class MainSceneController extends Component {
    * 创建或复用招聘弹窗组件。
    * 控制器只负责提供回调和当前运行态，具体 UI 节点由组件维护。
    */
-  private ensureRecruitmentOverlay(sceneVisualNodes: SceneVisualNodes): void {
+  private ensureRecruitmentOverlay(sceneVisualNodes: MainSceneVisualNodes): void {
     if (this.recruitmentPanelView?.node.isValid) {
       return;
     }
 
-    const viewportMetrics = this.getViewportMetrics();
-    const recruitmentPanelRoot = this.createLayerNode(
+    const viewportMetrics = this.getCurrentViewportMetrics();
+    const recruitmentPanelRoot = createLayerNode(
       this.node,
       'RecruitmentPanelView',
       new Vec3(0, 0, 25),
@@ -394,7 +183,7 @@ export class MainSceneController extends Component {
    */
   private refreshRecruitmentOverlay(
     gameState: GameState,
-    sceneVisualNodes: SceneVisualNodes,
+    sceneVisualNodes: MainSceneVisualNodes,
   ): void {
     if (!this.recruitmentPanelView?.node.isValid) {
       this.ensureRecruitmentOverlay(sceneVisualNodes);
@@ -424,7 +213,7 @@ export class MainSceneController extends Component {
   };
   private async renderMapSheepSprites(
     gameState: GameState,
-    sceneVisualNodes: SceneVisualNodes,
+    sceneVisualNodes: MainSceneVisualNodes,
   ): Promise<void> {
     const mapSheepLayerView = this.ensureMapSheepLayerView(sceneVisualNodes);
     await mapSheepLayerView.render(gameState, {
@@ -439,14 +228,14 @@ export class MainSceneController extends Component {
    * 主控制器只负责挂载组件节点，具体羊节点和飘字由组件维护。
    */
   private ensureMapSheepLayerView(
-    sceneVisualNodes: SceneVisualNodes,
+    sceneVisualNodes: MainSceneVisualNodes,
   ): MainSceneMapSheepLayerView {
     if (this.mapSheepLayerView?.node.isValid) {
       return this.mapSheepLayerView;
     }
 
-    const viewportMetrics = this.getViewportMetrics();
-    const mapSheepLayer = this.createLayerNode(
+    const viewportMetrics = this.getCurrentViewportMetrics();
+    const mapSheepLayer = createLayerNode(
       this.node,
       'MapSheepLayer',
       new Vec3(0, 0, 5),
@@ -641,7 +430,10 @@ export class MainSceneController extends Component {
    * 将业务快照同步到顶部核心 HUD。
    * 左侧展示总资产与 `xx/s` 秒产，左上羊钻面板当前只展示羊钻数。
    */
-  private refreshCoreHud(gameState: GameState, sceneVisualNodes: SceneVisualNodes): void {
+  private refreshCoreHud(
+    gameState: GameState,
+    sceneVisualNodes: MainSceneVisualNodes,
+  ): void {
     const hudSnapshot = createCoreHudSnapshot(gameState, GAME_CONFIG.sheepDefinitions);
     sceneVisualNodes.hudView.refresh({
       idleEnergyText: this.formatIdleEnergyValue(hudSnapshot.idleEnergy),
@@ -696,223 +488,36 @@ export class MainSceneController extends Component {
   }
 
   /**
-   * 将 `resources` 中的图片子资源统一转成 `SpriteFrame` Promise。
-   */
-  private loadSpriteFrame(resourcePath: string): Promise<SpriteFrame> {
-    return new Promise<SpriteFrame>((resolve, reject) => {
-      resources.load(resourcePath, SpriteFrame, (error, spriteFrame) => {
-        if (error || !spriteFrame) {
-          reject(error ?? new Error(`Missing spriteFrame: ${resourcePath}`));
-          return;
-        }
-
-        resolve(spriteFrame);
-      });
-    });
-  }
-
-  /**
    * 启动失败时给出稳定可见的错误反馈，避免黑屏。
    */
   private renderFatalError(): void {
-    const viewportMetrics = this.getViewportMetrics();
+    this.ensureFoundationView().renderFatalError();
+  }
 
-    const canvasNode = this.node.parent;
-    const canvasNodeTransform = canvasNode?.getComponent(UITransform);
-    if (canvasNodeTransform) {
-      canvasNodeTransform.setContentSize(viewportMetrics.width, viewportMetrics.height);
+  /**
+   * 创建或复用主场景基础视图组件。
+   * 基础视图负责屏幕尺寸、背景、HUD 骨架和启动失败画面。
+   */
+  private ensureFoundationView(): MainSceneFoundationView {
+    if (this.foundationView?.isValid && this.foundationView.node.isValid) {
+      return this.foundationView;
     }
 
-    const sceneCamera = canvasNode?.getChildByName('Camera')?.getComponent(Camera);
-    if (sceneCamera) {
-      sceneCamera.orthoHeight = viewportMetrics.height / 2;
-    }
-
-    const canvasTransform = this.node.getComponent(UITransform);
-    if (canvasTransform) {
-      canvasTransform.setContentSize(viewportMetrics.width, viewportMetrics.height);
-    }
-
-    this.node.removeAllChildren();
-    this.createRect(
-      this.node,
-      'ErrorBackground',
-      new Vec3(0, 0, 0),
-      viewportMetrics.width,
-      viewportMetrics.height,
-      new Color(36, 18, 18, 255),
-      new Color(36, 18, 18, 255),
-    );
-    this.createLabel(
-      this.node,
-      'ErrorText',
-      '启动失败，请检查控制台日志。',
-      32,
-      520,
-      50,
-      new Vec3(0, 0, 0),
-      new Color(255, 221, 221, 255),
-    );
+    const existingView = this.node.getComponent(MainSceneFoundationView);
+    const foundationView = existingView ?? this.node.addComponent(MainSceneFoundationView);
+    this.foundationView = foundationView;
+    return foundationView;
   }
 
   /**
-   * 获取当前可视区域尺寸。
-   * 背景、相机与 HUD 都必须跟随这里的尺寸结果。
+   * 获取当前主场景布局尺寸。
+   * 其他组件挂载层需要读取这个结果，但尺寸计算本身由基础视图统一维护。
    */
-  private getViewportMetrics(): ViewportMetrics {
-    const visibleSize = view.getVisibleSize();
-    const width = Math.round(visibleSize.width || DESIGN_WIDTH);
-    const height = Math.round(visibleSize.height || DESIGN_HEIGHT);
-
-    return {
-      width,
-      height,
-      layoutScale: width / LEGACY_LAYOUT_WIDTH,
-    };
-  }
-
-  /**
-   * 基于旧布局基准创建统一缩放函数。
-   */
-  private createLayoutScaler(layoutScale: number): (value: number) => number {
-    return (value: number) => Math.round(value * layoutScale);
-  }
-
-  /**
-   * 按目标显示宽度与原图比例计算高度，保证贴图不被拉伸变形。
-   */
-  private calculateHeightByWidth(
-    displayWidth: number,
-    sourceWidth: number,
-    sourceHeight: number,
-  ): number {
-    return Math.round((displayWidth * sourceHeight) / sourceWidth);
-  }
-
-  /**
-   * 创建纯内容挂点，供背景图、羊贴图和 HUD 贴图使用。
-   */
-  private createLayerNode(
-    parent: Node,
-    name: string,
-    position: Vec3,
-    width: number,
-    height: number,
-  ): Node {
-    return createUiLayerNode(parent, name, position, width, height);
-  }
-
-  /**
-   * 创建使用自定义尺寸的 `Sprite` 节点。
-   * 所有真实贴图都通过这个入口挂入场景，避免尺寸处理分散。
-   */
-  private createSpriteNode(
-    parent: Node,
-    name: string,
-    spriteFrame: SpriteFrame,
-    position: Vec3,
-    width: number,
-    height: number,
-  ): Sprite {
-    return createUiSpriteNode(parent, name, spriteFrame, position, width, height);
-  }
-
-  /**
-   * 创建基础矩形节点，用于兜底背景与异常场景。
-   */
-  private createRect(
-    parent: Node,
-    name: string,
-    position: Vec3,
-    width: number,
-    height: number,
-    fillColor: Color,
-    strokeColor: Color,
-  ): Node {
-    return createUiRect(parent, name, position, width, height, fillColor, strokeColor);
-  }
-
-  /**
-   * 统一创建文本节点。
-   * 默认使用收缩模式，优先保证 HUD 在不同设备宽度下不溢出。
-   */
-  private createLabel(
-    parent: Node,
-    name: string,
-    text: string,
-    fontSize: number,
-    width: number,
-    height: number,
-    position: Vec3,
-    color: Color,
-    horizontalAlign: number = Label.HorizontalAlign.CENTER,
-    isBold: boolean = false,
-  ): Label {
-    return createUiLabel(
-      parent,
-      name,
-      text,
-      fontSize,
-      width,
-      height,
-      position,
-      color,
-      horizontalAlign,
-      isBold,
-    );
-  }
-
-  /**
-   * 创建圆角底板。
-   * 当前主要用于羊阴影与状态条，保持辅助信息样式克制统一。
-   */
-  private createRoundedRect(
-    parent: Node,
-    name: string,
-    position: Vec3,
-    width: number,
-    height: number,
-    radius: number,
-    fillColor: Color,
-    strokeColor: Color,
-    lineWidth: number,
-  ): Node {
-    return createUiRoundedRect(
-      parent,
-      name,
-      position,
-      width,
-      height,
-      radius,
-      fillColor,
-      strokeColor,
-      lineWidth,
-    );
-  }
-
-  /**
-   * 创建椭圆节点。
-   * 当前主要给羊影子使用，让底部受光关系更柔和。
-   */
-  private createEllipse(
-    parent: Node,
-    name: string,
-    position: Vec3,
-    width: number,
-    height: number,
-    fillColor: Color,
-    strokeColor: Color,
-    lineWidth: number,
-  ): Node {
-    return createUiEllipse(
-      parent,
-      name,
-      position,
-      width,
-      height,
-      fillColor,
-      strokeColor,
-      lineWidth,
-    );
+  private getCurrentViewportMetrics(): MainSceneViewportMetrics {
+    const viewportMetrics =
+      this.currentViewportMetrics ?? this.ensureFoundationView().getViewportMetrics();
+    this.currentViewportMetrics = viewportMetrics;
+    this.currentLayoutScale = viewportMetrics.layoutScale;
+    return viewportMetrics;
   }
 }
