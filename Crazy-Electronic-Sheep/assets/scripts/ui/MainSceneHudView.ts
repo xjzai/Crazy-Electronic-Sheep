@@ -10,13 +10,11 @@ import {
   Vec3,
 } from 'cc';
 import {
-  createHudPanelLayers,
-  createLabel,
   createLayerNode,
   createSpriteNode,
 } from './uiNodeFactory';
 
-const { ccclass } = _decorator;
+const { ccclass, property } = _decorator;
 
 const IDLE_ENERGY_HUD_SOURCE_WIDTH = 1774;
 const IDLE_ENERGY_HUD_SOURCE_HEIGHT = 500;
@@ -44,38 +42,69 @@ export interface MainSceneHudViewModel {
 @ccclass('MainSceneHudView')
 export class MainSceneHudView extends Component {
   /**
+   * 摸鱼能量 HUD 面板根节点。
+   * 新场景通过 Inspector 绑定，旧场景缺失时按同名节点兜底创建。
+   */
+  @property(Node)
+  private idleEnergyHudRoot: Node | null = null;
+
+  /**
+   * 摸鱼能量 HUD 面板贴图挂点。
+   * 异步加载到的面板 Sprite 会作为它的子节点挂入。
+   */
+  @property(Node)
+  private idleEnergyHudSpriteAnchor: Node | null = null;
+
+  /**
+   * 摸鱼能量 HUD 文本层。
+   * 资源数值和秒产文本都挂在这一层，确保贴图异步加载不会盖住文字。
+   */
+  @property(Node)
+  private idleEnergyHudLabelLayer: Node | null = null;
+
+  /**
    * 摸鱼能量总量文本节点。
    * 由 `refresh` 接收上层格式化后的字符串，不直接读取业务状态。
    */
+  @property(Label)
   private idleEnergyValueLabel: Label | null = null;
 
   /**
    * 全局每秒产出文本节点。
    */
+  @property(Label)
   private globalIdleEnergyPerSecondValueLabel: Label | null = null;
+
+  /**
+   * 羊钻 HUD 面板根节点。
+   * 当前只展示占位羊钻数值，后续科技系统接入后继续复用。
+   */
+  @property(Node)
+  private sheepDiamondHudRoot: Node | null = null;
+
+  /**
+   * 羊钻 HUD 面板贴图挂点。
+   */
+  @property(Node)
+  private sheepDiamondHudSpriteAnchor: Node | null = null;
+
+  /**
+   * 羊钻 HUD 文本层。
+   */
+  @property(Node)
+  private sheepDiamondHudLabelLayer: Node | null = null;
 
   /**
    * 羊钻占位文本节点。
    */
+  @property(Label)
   private sheepDiamondValueLabel: Label | null = null;
-
-  /**
-   * 摸鱼能量 HUD 贴图挂点。
-   */
-  private idleEnergyHudSpriteAnchor: Node | null = null;
-
-  /**
-   * 羊钻 HUD 贴图挂点。
-   */
-  private sheepDiamondHudSpriteAnchor: Node | null = null;
 
   /**
    * 构建顶部 HUD 节点树。
    * 输入是主场景计算好的可视尺寸，输出通过组件字段保留刷新句柄。
    */
   public build(options: MainSceneHudViewBuildOptions): void {
-    this.node.removeAllChildren();
-
     const scaleLayout = (value: number) => Math.round(value * options.layoutScale);
     const sidePadding = scaleLayout(16);
     const topPadding = scaleLayout(16);
@@ -116,16 +145,35 @@ export class MainSceneHudView extends Component {
       Math.round(idleEnergyHudWidth / 2);
     const hudTextScale = Math.max(0.72, hudFitScale);
 
-    const idleEnergyHud = createHudPanelLayers(
+    this.idleEnergyHudRoot = this.ensureMountedNode(
+      this.idleEnergyHudRoot,
       this.node,
       'IdleEnergyHud',
       new Vec3(idleEnergyHudX, diamondHudY, 0),
       idleEnergyHudWidth,
       idleEnergyHudHeight,
     );
-    this.idleEnergyHudSpriteAnchor = idleEnergyHud.spriteAnchor;
-    this.idleEnergyValueLabel = createLabel(
-      idleEnergyHud.labelLayer,
+    this.idleEnergyHudSpriteAnchor = this.ensureMountedNode(
+      this.idleEnergyHudSpriteAnchor,
+      this.idleEnergyHudRoot,
+      'IdleEnergyHudSpriteAnchor',
+      new Vec3(0, 0, 0),
+      idleEnergyHudWidth,
+      idleEnergyHudHeight,
+    );
+    this.idleEnergyHudLabelLayer = this.ensureMountedNode(
+      this.idleEnergyHudLabelLayer,
+      this.idleEnergyHudRoot,
+      'IdleEnergyHudLabelLayer',
+      new Vec3(0, 0, 0),
+      idleEnergyHudWidth,
+      idleEnergyHudHeight,
+    );
+    this.idleEnergyHudLabelLayer.setSiblingIndex(1);
+
+    this.idleEnergyValueLabel = this.ensureMountedLabel(
+      this.idleEnergyValueLabel,
+      this.idleEnergyHudLabelLayer,
       'IdleEnergyValueLabel',
       '0',
       Math.max(26, Math.round(scaleLayout(40) * hudTextScale)),
@@ -140,8 +188,9 @@ export class MainSceneHudView extends Component {
       Label.HorizontalAlign.CENTER,
       true,
     );
-    this.globalIdleEnergyPerSecondValueLabel = createLabel(
-      idleEnergyHud.labelLayer,
+    this.globalIdleEnergyPerSecondValueLabel = this.ensureMountedLabel(
+      this.globalIdleEnergyPerSecondValueLabel,
+      this.idleEnergyHudLabelLayer,
       'GlobalIdleEnergyPerSecondValueLabel',
       '0/s',
       Math.max(16, Math.round(scaleLayout(22) * hudTextScale)),
@@ -157,16 +206,37 @@ export class MainSceneHudView extends Component {
       true,
     );
 
-    const sheepDiamondHud = createHudPanelLayers(
+    this.sheepDiamondHudRoot = this.ensureMountedNode(
+      this.sheepDiamondHudRoot,
       this.node,
       'HighestUnlockedHud',
       new Vec3(diamondHudX, diamondHudY, 0),
       diamondHudWidth,
       diamondHudHeight,
     );
-    this.sheepDiamondHudSpriteAnchor = sheepDiamondHud.spriteAnchor;
-    this.sheepDiamondValueLabel = createLabel(
-      sheepDiamondHud.labelLayer,
+    this.sheepDiamondHudRoot.setSiblingIndex(0);
+    this.idleEnergyHudRoot.setSiblingIndex(1);
+    this.sheepDiamondHudSpriteAnchor = this.ensureMountedNode(
+      this.sheepDiamondHudSpriteAnchor,
+      this.sheepDiamondHudRoot,
+      'HighestUnlockedHudSpriteAnchor',
+      new Vec3(0, 0, 0),
+      diamondHudWidth,
+      diamondHudHeight,
+    );
+    this.sheepDiamondHudLabelLayer = this.ensureMountedNode(
+      this.sheepDiamondHudLabelLayer,
+      this.sheepDiamondHudRoot,
+      'HighestUnlockedHudLabelLayer',
+      new Vec3(0, 0, 0),
+      diamondHudWidth,
+      diamondHudHeight,
+    );
+    this.sheepDiamondHudLabelLayer.setSiblingIndex(1);
+
+    this.sheepDiamondValueLabel = this.ensureMountedLabel(
+      this.sheepDiamondValueLabel,
+      this.sheepDiamondHudLabelLayer,
       'SheepDiamondValueLabel',
       '0',
       Math.max(24, Math.round(scaleLayout(36) * hudTextScale)),
@@ -232,6 +302,7 @@ export class MainSceneHudView extends Component {
 
     try {
       const spriteFrame = await this.loadSpriteFrame(resourcePath);
+      spriteAnchor.getChildByName(spriteNodeName)?.destroy();
       const spriteTransform = spriteAnchor.getComponent(UITransform);
       const spriteWidth = spriteTransform?.contentSize.width ?? 0;
       const spriteHeight = spriteTransform?.contentSize.height ?? 0;
@@ -246,6 +317,82 @@ export class MainSceneHudView extends Component {
     } catch (error) {
       console.error(`[MainSceneHudView] hud panel load failed: ${resourcePath}`, error);
     }
+  }
+
+  /**
+   * 查找或创建一个 HUD 固定节点，并同步位置和 UI 尺寸。
+   * 这里不清空父节点，避免破坏用户在场景层级里手动挂载的子节点。
+   */
+  private ensureMountedNode(
+    configuredNode: Node | null,
+    parent: Node,
+    nodeName: string,
+    position: Vec3,
+    width: number,
+    height: number,
+  ): Node {
+    const existingNode =
+      configuredNode?.isValid ? configuredNode : parent.getChildByName(nodeName);
+    const mountedNode =
+      existingNode ?? createLayerNode(parent, nodeName, position, width, height);
+
+    if (mountedNode.parent !== parent) {
+      mountedNode.parent = parent;
+    }
+
+    mountedNode.setPosition(position);
+    const transform =
+      mountedNode.getComponent(UITransform) ?? mountedNode.addComponent(UITransform);
+    transform.setContentSize(width, height);
+
+    return mountedNode;
+  }
+
+  /**
+   * 查找或创建一个 HUD 文本组件，并同步它的展示参数。
+   * 文本内容由 `refresh` 后续覆盖，`defaultText` 只用于首次构建时兜底。
+   */
+  private ensureMountedLabel(
+    configuredLabel: Label | null,
+    parent: Node,
+    nodeName: string,
+    defaultText: string,
+    fontSize: number,
+    width: number,
+    height: number,
+    position: Vec3,
+    color: Color,
+    horizontalAlign: number,
+    isBold: boolean,
+  ): Label {
+    const existingLabel =
+      configuredLabel?.isValid && configuredLabel.node.isValid
+        ? configuredLabel
+        : parent.getChildByName(nodeName)?.getComponent(Label) ?? null;
+    const labelNode =
+      existingLabel?.node ?? createLayerNode(parent, nodeName, position, width, height);
+
+    if (labelNode.parent !== parent) {
+      labelNode.parent = parent;
+    }
+
+    labelNode.setPosition(position);
+    const transform =
+      labelNode.getComponent(UITransform) ?? labelNode.addComponent(UITransform);
+    transform.setContentSize(width, height);
+
+    const label = existingLabel ?? labelNode.addComponent(Label);
+    label.string = defaultText;
+    label.fontSize = fontSize;
+    label.lineHeight = fontSize + 10;
+    label.color = color;
+    label.enableWrapText = true;
+    label.overflow = Label.Overflow.SHRINK;
+    label.horizontalAlign = horizontalAlign;
+    label.verticalAlign = Label.VerticalAlign.CENTER;
+    label.isBold = isBold;
+
+    return label;
   }
 
   /**

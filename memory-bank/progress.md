@@ -131,6 +131,7 @@
 - `CoreHudRoot` 已直接挂载 `MainSceneHudView`；稳定根节点已进入 Cocos 层级面板，HUD 内部文字/贴图、招聘弹窗和羊群表现仍由对应组件运行时创建，后续应继续迁移为 Prefab 或更细的场景节点绑定。
 - 已把 `MapSheepLayerRoot` 和 `RecruitmentPanelRoot` 写入 `MainScene.scene`，分别挂载 `MainSceneMapSheepLayerView` 与 `MainSceneRecruitmentPanelView`，并由 `MainSceneController` 的 `@property` 字段引用。
 - `MainSceneFoundationView` 不再销毁 `ContentRoot` 的其他子节点，避免刷新基础视图时误删场景挂载的地图羊群层和招聘弹窗层。
+- 已继续迁移 HUD 内部固定层级：`CoreHudRoot` 下已有 `IdleEnergyHud`、`HighestUnlockedHud`、贴图挂点、文本层和 3 个 `cc.Label` 节点，`MainSceneHudView` 通过 `@property` 复用这些场景节点。
 - 本轮新增验证状态：`MainScene.scene` JSON 解析通过，组件引用结构校验通过，`npm.cmd run check` 通过，`npm.cmd test` 的 Node 逻辑测试 10 项通过。
 
 ## 7. 2026-05-17 琛ュ厖杩涘睍
