@@ -261,6 +261,7 @@ export class MainSceneController extends Component {
     const mapSheepLayerView = this.ensureMapSheepLayerView(sceneVisualNodes);
     await mapSheepLayerView.render(gameState, {
       layoutScale: this.currentLayoutScale,
+      roamingConfig: GAME_CONFIG.roaming,
       sheepArtAnchor: sceneVisualNodes.sheepArtAnchor,
       showStatusMessage: (message) => sceneVisualNodes.statusView.showMessage(message),
     });

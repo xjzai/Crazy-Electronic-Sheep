@@ -44,6 +44,10 @@ export interface SheepInstanceState {
   mapId: MapId;
   bornAt: number;
   source: 'new_game_gift' | 'purchase';
+  /**
+   * 业务层保存的落点位置。
+   * 可视漫游会以这个位置作为初始点，但不会把每一帧表现位置写回存档。
+   */
   position: SheepPosition;
 }
 

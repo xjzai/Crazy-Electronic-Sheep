@@ -1,3 +1,4 @@
+import type { RoamingConfig } from '../domain/sheepRoamingService';
 import type { MapId, SheepId, SheepPosition } from '../domain/gameStateSchema';
 
 /**
@@ -44,6 +45,7 @@ export interface GameConfig {
   sheepDefinitions: Record<SheepId, SheepDefinition>;
   mapOrder: MapId[];
   maps: Record<MapId, MapDefinition>;
+  roaming: RoamingConfig;
   initialCurrentMapId: MapId;
   initialHighestUnlockedMapId: MapId;
   initialIdleEnergy: number;
@@ -121,27 +123,27 @@ function createSpawnPoints(points: Array<[number, number]>): SheepPosition[] {
 }
 
 const MAP_01_SPAWN_POINTS = createSpawnPoints([
-  // 第一图出生点刻意收在围栏内圈，避免 1080x1920 下贴边或直接落到屏幕外。
-  [-250, -380],
-  [-125, -340],
-  [0, -380],
-  [125, -340],
-  [250, -380],
-  [-250, -120],
-  [-125, -80],
-  [0, -120],
-  [125, -80],
-  [250, -120],
-  [-250, 140],
-  [-125, 180],
-  [0, 140],
-  [125, 180],
-  [250, 140],
-  [-250, 360],
-  [-125, 400],
-  [0, 360],
-  [125, 400],
-  [250, 360],
+  // 第一图出生点刻意收在围栏内圈，给栅栏和羊自身宽高留出安全边距。
+  [-200, -280],
+  [-100, -250],
+  [0, -280],
+  [100, -250],
+  [200, -280],
+  [-200, -110],
+  [-100, -80],
+  [0, -110],
+  [100, -80],
+  [200, -110],
+  [-200, 80],
+  [-100, 110],
+  [0, 80],
+  [100, 110],
+  [200, 80],
+  [-200, 230],
+  [-100, 260],
+  [0, 230],
+  [100, 260],
+  [200, 230],
 ]);
 
 const MAP_02_SPAWN_POINTS = createSpawnPoints([
@@ -167,6 +169,33 @@ const MAP_02_SPAWN_POINTS = createSpawnPoints([
   [120, 420],
   [240, 380],
 ]);
+
+/**
+ * 可视漫游只作用于当前显示地图的表现层。
+ * 边界采用连续坐标，不使用格子模型；第一图边界略大于出生点包围盒，但仍保持在围栏内圈。
+ */
+const ROAMING_CONFIG: RoamingConfig = {
+  mapBounds: {
+    map_01: {
+      minX: -220,
+      maxX: 220,
+      minY: -300,
+      maxY: 280,
+    },
+    map_02: {
+      minX: -310,
+      maxX: 310,
+      minY: -410,
+      maxY: 440,
+    },
+  },
+  minIdleSeconds: 0.9,
+  maxIdleSeconds: 2.2,
+  minMoveDistance: 70,
+  maxMoveDistance: 190,
+  speedUnitsPerSecond: 82,
+  arrivalDistance: 3,
+};
 
 /**
  * 当前 issue 先实现第一图自动产出与核心 HUD，因此配置从极小骨架扩展到“可计算秒产”的最小闭环。
@@ -200,6 +229,7 @@ export const GAME_CONFIG: GameConfig = {
       placeholderSummary: '本 issue 只预留 map_02 的状态与占位骨架，不实现解锁和切图。',
     },
   },
+  roaming: ROAMING_CONFIG,
   initialCurrentMapId: 'map_01',
   initialHighestUnlockedMapId: 'map_01',
   initialIdleEnergy: 0,

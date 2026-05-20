@@ -12,6 +12,29 @@ const {
   getMapSheepInstances,
   settleIdleProduction,
 } = require('../temp/node-tests/assets/scripts/domain/gameStateSchema.js');
+const {
+  createInitialSheepRoamingState,
+  createSheepVisualStyle,
+  getSheepSpriteScaleX,
+  stepSheepRoamingState,
+} = require('../temp/node-tests/assets/scripts/domain/sheepRoamingService.js');
+
+function createFixedRandom(values) {
+  let index = 0;
+
+  return () => {
+    const value = values[index] ?? values[values.length - 1] ?? 0;
+    index += 1;
+    return value;
+  };
+}
+
+function assertPositionInsideBounds(position, bounds) {
+  assert.ok(position.x >= bounds.minX, `x ${position.x} should be >= ${bounds.minX}`);
+  assert.ok(position.x <= bounds.maxX, `x ${position.x} should be <= ${bounds.maxX}`);
+  assert.ok(position.y >= bounds.minY, `y ${position.y} should be >= ${bounds.minY}`);
+  assert.ok(position.y <= bounds.maxY, `y ${position.y} should be <= ${bounds.maxY}`);
+}
 
 test('新档会进入 map_01，并同步赠送羊、最高解锁羊、已解锁列表和图鉴状态', () => {
   const now = 1_717_171_717_000;
@@ -198,4 +221,221 @@ test('第一图资源不足时，购买失败且不会扣资源或改写地图�
   assert.equal(purchaseResult.reason, 'insufficient_idle_energy');
   assert.strictEqual(purchaseResult.gameState, gameState);
   assert.equal(JSON.stringify(gameState), beforeSnapshot);
+});
+
+test('第一图羊漫游状态会先停顿，再选择边界内连续目标并按方向翻转', () => {
+  const gameState = createNewGameState(GAME_CONFIG, 1_717_171_717_000);
+  const sheep = getMapSheepInstances(gameState, 'map_01')[0];
+  const random = createFixedRandom([0, 0.9, 0.5]);
+
+  const initialRoamingState = createInitialSheepRoamingState(
+    sheep,
+    GAME_CONFIG.roaming,
+    random,
+  );
+
+  assert.equal(initialRoamingState.phase, 'idle');
+  assert.equal(initialRoamingState.facing, 'right');
+  assertPositionInsideBounds(
+    initialRoamingState.position,
+    GAME_CONFIG.roaming.mapBounds.map_01,
+  );
+  assert.notDeepEqual(initialRoamingState.position, sheep.position);
+  assert.deepEqual(
+    createInitialSheepRoamingState(
+      sheep,
+      GAME_CONFIG.roaming,
+      createFixedRandom([0, 0.9, 0.5]),
+    ).position,
+    initialRoamingState.position,
+  );
+  assert.deepEqual(initialRoamingState.position, {
+    x: GAME_CONFIG.roaming.mapBounds.map_01.minX,
+    y: Math.round(
+      GAME_CONFIG.roaming.mapBounds.map_01.minY +
+        0.9 *
+          (GAME_CONFIG.roaming.mapBounds.map_01.maxY -
+            GAME_CONFIG.roaming.mapBounds.map_01.minY),
+    ),
+  });
+
+  const waitingState = stepSheepRoamingState(
+    initialRoamingState,
+    GAME_CONFIG.roaming.mapBounds.map_01,
+    GAME_CONFIG.roaming,
+    GAME_CONFIG.roaming.minIdleSeconds / 2,
+    random,
+  );
+
+  assert.equal(waitingState.phase, 'idle');
+  assert.ok(waitingState.remainingSeconds > 0);
+
+  const walkingState = stepSheepRoamingState(
+    waitingState,
+    GAME_CONFIG.roaming.mapBounds.map_01,
+    GAME_CONFIG.roaming,
+    GAME_CONFIG.roaming.maxIdleSeconds,
+    random,
+  );
+
+  assert.equal(walkingState.phase, 'walking');
+  assert.equal(walkingState.facing, 'right');
+  assert.ok(walkingState.targetPosition);
+  assert.ok(walkingState.targetPosition.x <= GAME_CONFIG.roaming.mapBounds.map_01.maxX);
+  assert.ok(walkingState.targetPosition.x >= GAME_CONFIG.roaming.mapBounds.map_01.minX);
+  assert.ok(walkingState.targetPosition.y <= GAME_CONFIG.roaming.mapBounds.map_01.maxY);
+  assert.ok(walkingState.targetPosition.y >= GAME_CONFIG.roaming.mapBounds.map_01.minY);
+  assert.notDeepEqual(walkingState.targetPosition, GAME_CONFIG.maps.map_01.spawnPoints[0]);
+});
+
+test('第一图羊行走会按速度推进，到达目标后回到停顿状态', () => {
+  const random = createFixedRandom([0.25]);
+  const walkingState = {
+    phase: 'walking',
+    position: { x: 100, y: 0 },
+    targetPosition: { x: 0, y: 0 },
+    facing: 'left',
+    remainingSeconds: 0,
+    speedUnitsPerSecond: 50,
+  };
+
+  const movedState = stepSheepRoamingState(
+    walkingState,
+    GAME_CONFIG.roaming.mapBounds.map_01,
+    GAME_CONFIG.roaming,
+    1,
+    random,
+  );
+
+  assert.equal(movedState.phase, 'walking');
+  assert.equal(movedState.facing, 'left');
+  assert.deepEqual(movedState.position, { x: 50, y: 0 });
+
+  const arrivedState = stepSheepRoamingState(
+    movedState,
+    GAME_CONFIG.roaming.mapBounds.map_01,
+    GAME_CONFIG.roaming,
+    2,
+    random,
+  );
+
+  assert.equal(arrivedState.phase, 'idle');
+  assert.deepEqual(arrivedState.position, { x: 0, y: 0 });
+  assert.equal(arrivedState.targetPosition, null);
+  assert.ok(arrivedState.remainingSeconds >= GAME_CONFIG.roaming.minIdleSeconds);
+});
+
+test('羊等级视觉样式会随编号稳定区分', () => {
+  const firstLevelStyle = createSheepVisualStyle('001');
+  const middleLevelStyle = createSheepVisualStyle('010');
+  const lateLevelStyle = createSheepVisualStyle('020');
+
+  assert.equal(Object.hasOwn(firstLevelStyle, 'badgeText'), false);
+  assert.ok(middleLevelStyle.displayScale > firstLevelStyle.displayScale);
+  assert.ok(lateLevelStyle.displayScale > middleLevelStyle.displayScale);
+  assert.notDeepEqual(middleLevelStyle.tint, firstLevelStyle.tint);
+  assert.notDeepEqual(lateLevelStyle.tint, middleLevelStyle.tint);
+  assert.deepEqual(createSheepVisualStyle('010'), middleLevelStyle);
+});
+
+test('第一图羊贴图朝向会按 sheep_001 原始面向左的素材反向映射', () => {
+  assert.equal(getSheepSpriteScaleX('right'), -1);
+  assert.equal(getSheepSpriteScaleX('left'), 1);
+});
+
+test('第一图出生点和漫游边界会留在栅栏内圈', () => {
+  const bounds = GAME_CONFIG.roaming.mapBounds.map_01;
+
+  assert.deepEqual(bounds, {
+    minX: -220,
+    maxX: 220,
+    minY: -300,
+    maxY: 280,
+  });
+  for (const spawnPoint of GAME_CONFIG.maps.map_01.spawnPoints) {
+    assertPositionInsideBounds(spawnPoint, bounds);
+  }
+});
+
+test('旧存档中的第一图越界羊会在创建漫游表现态时回到栅栏内圈', () => {
+  const bounds = GAME_CONFIG.roaming.mapBounds.map_01;
+  const roamingState = createInitialSheepRoamingState(
+    {
+      instanceId: 'legacy-map_01-001-01',
+      sheepId: '001',
+      mapId: 'map_01',
+      bornAt: 1_717_171_717_000,
+      source: 'new_game_gift',
+      position: { x: 999, y: -999 },
+    },
+    GAME_CONFIG.roaming,
+    createFixedRandom([0]),
+  );
+
+  assertPositionInsideBounds(roamingState.position, bounds);
+});
+
+test('第一图重新进游戏时会重新随机打散初始表现位置', () => {
+  const bounds = GAME_CONFIG.roaming.mapBounds.map_01;
+  const baseSheep = {
+    instanceId: 'purchase-map_01-001-01',
+    sheepId: '001',
+    mapId: 'map_01',
+    bornAt: 1_717_171_717_000,
+    source: 'purchase',
+    position: GAME_CONFIG.maps.map_01.spawnPoints[0],
+  };
+  const firstEntryState = createInitialSheepRoamingState(
+    baseSheep,
+    GAME_CONFIG.roaming,
+    createFixedRandom([0.1, 0.8, 0]),
+  );
+  const nextEntryState = createInitialSheepRoamingState(
+    baseSheep,
+    GAME_CONFIG.roaming,
+    createFixedRandom([0.8, 0.2, 0]),
+  );
+  const repeatableState = createInitialSheepRoamingState(
+    baseSheep,
+    GAME_CONFIG.roaming,
+    createFixedRandom([0.1, 0.8, 0]),
+  );
+
+  assertPositionInsideBounds(firstEntryState.position, bounds);
+  assertPositionInsideBounds(nextEntryState.position, bounds);
+  assert.notDeepEqual(firstEntryState.position, baseSheep.position);
+  assert.notDeepEqual(firstEntryState.position, nextEntryState.position);
+  assert.deepEqual(firstEntryState.position, repeatableState.position);
+});
+
+test('第一图初始随机位置会覆盖完整可移动边界而不是出生点附近半径', () => {
+  const bounds = GAME_CONFIG.roaming.mapBounds.map_01;
+  const sheep = {
+    instanceId: 'purchase-map_01-001-edge',
+    sheepId: '001',
+    mapId: 'map_01',
+    bornAt: 1_717_171_717_000,
+    source: 'purchase',
+    position: GAME_CONFIG.maps.map_01.spawnPoints[0],
+  };
+
+  const minCornerState = createInitialSheepRoamingState(
+    sheep,
+    GAME_CONFIG.roaming,
+    createFixedRandom([0, 0, 0]),
+  );
+  const maxCornerState = createInitialSheepRoamingState(
+    sheep,
+    GAME_CONFIG.roaming,
+    createFixedRandom([1, 1, 0]),
+  );
+
+  assert.deepEqual(minCornerState.position, {
+    x: bounds.minX,
+    y: bounds.minY,
+  });
+  assert.deepEqual(maxCornerState.position, {
+    x: bounds.maxX,
+    y: bounds.maxY,
+  });
 });
