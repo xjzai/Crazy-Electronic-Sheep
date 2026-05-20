@@ -67,8 +67,8 @@ export class MainSceneController extends Component {
   private isRecruitmentModalVisible = false;
 
   /**
-   * 最近一次购买反馈文本会同时驱动场景提示条和弹窗提示区，
-   * 方便玩家立即知道“成功 / 资源不足 / 满员 / 无出生点”等结果。
+   * 最近一次购买反馈文本只保留在控制器内，供后续事件链路复用。
+   * 当前招聘结果已经统一走顶部提示组件，不再在招聘弹窗底部保留独立反馈区。
    */
   private latestRecruitmentFeedback = '';
 
@@ -218,11 +218,12 @@ export class MainSceneController extends Component {
 
     this.recruitmentPanelView = recruitmentPanelView;
     this.isRecruitmentPanelBuilt = true;
-    sceneVisualNodes.sheepStatusLabel.string = '招聘入口已就绪';
+    sceneVisualNodes.statusView.showMessage('招聘入口已就绪');
   }
 
   /**
-   * 刷新招聘弹窗视图并把组件返回的反馈文案同步到主场景状态条。
+   * 刷新招聘弹窗视图。
+   * 弹窗内部反馈文案由组件自己显示，顶部飘字提示只在明确事件发生时单独触发。
    */
   private refreshRecruitmentOverlay(
     gameState: GameState,
@@ -236,13 +237,11 @@ export class MainSceneController extends Component {
       return;
     }
 
-    const feedbackMessage = this.recruitmentPanelView.refresh({
+    this.recruitmentPanelView.refresh({
       gameState,
       isModalVisible: this.isRecruitmentModalVisible,
-      latestFeedback: this.latestRecruitmentFeedback,
       formatIdleEnergyValue: (value) => this.formatIdleEnergyValue(value),
     });
-    sceneVisualNodes.sheepStatusLabel.string = feedbackMessage;
   }
 
   /**
@@ -253,6 +252,7 @@ export class MainSceneController extends Component {
     if (this.runtimeGameState && this.sceneVisualNodes) {
       this.refreshRecruitmentOverlay(this.runtimeGameState, this.sceneVisualNodes);
     }
+    this.sceneVisualNodes?.statusView.showMessage(message);
   };
   private async renderMapSheepSprites(
     gameState: GameState,
@@ -262,7 +262,7 @@ export class MainSceneController extends Component {
     await mapSheepLayerView.render(gameState, {
       layoutScale: this.currentLayoutScale,
       sheepArtAnchor: sceneVisualNodes.sheepArtAnchor,
-      sheepStatusLabel: sceneVisualNodes.sheepStatusLabel,
+      showStatusMessage: (message) => sceneVisualNodes.statusView.showMessage(message),
     });
   }
 
@@ -282,8 +282,9 @@ export class MainSceneController extends Component {
           viewportMetrics.width,
           viewportMetrics.height,
         );
-        this.mapSheepLayerView.node.setSiblingIndex(
-          sceneVisualNodes.sheepArtAnchor.getSiblingIndex(),
+        this.syncLayerSiblingIndex(
+          this.mapSheepLayerView.node,
+          sceneVisualNodes.sheepArtAnchor,
         );
         this.mapSheepLayerView.preloadIdleEnergyFeedbackSpriteFrame();
         this.isMapSheepLayerPrepared = true;
@@ -293,8 +294,8 @@ export class MainSceneController extends Component {
 
     const viewportMetrics = this.getCurrentViewportMetrics();
     const mapSheepLayer =
-      this.node.getChildByName(MAP_SHEEP_LAYER_NODE_NAME) ??
-      this.node.getChildByName('MapSheepLayer') ??
+      this.findDescendantByName(this.node, MAP_SHEEP_LAYER_NODE_NAME) ??
+      this.findDescendantByName(this.node, 'MapSheepLayer') ??
       createLayerNode(
         this.node,
         MAP_SHEEP_LAYER_NODE_NAME,
@@ -308,7 +309,7 @@ export class MainSceneController extends Component {
       viewportMetrics.width,
       viewportMetrics.height,
     );
-    mapSheepLayer.setSiblingIndex(sceneVisualNodes.sheepArtAnchor.getSiblingIndex());
+    this.syncLayerSiblingIndex(mapSheepLayer, sceneVisualNodes.sheepArtAnchor);
 
     this.mapSheepLayerView =
       mapSheepLayer.getComponent(MainSceneMapSheepLayerView) ??
@@ -331,8 +332,8 @@ export class MainSceneController extends Component {
     }
 
     const recruitmentPanelRoot =
-      this.node.getChildByName(RECRUITMENT_PANEL_NODE_NAME) ??
-      this.node.getChildByName('RecruitmentPanelView') ??
+      this.findDescendantByName(this.node, RECRUITMENT_PANEL_NODE_NAME) ??
+      this.findDescendantByName(this.node, 'RecruitmentPanelView') ??
       createLayerNode(
         this.node,
         RECRUITMENT_PANEL_NODE_NAME,
@@ -358,7 +359,7 @@ export class MainSceneController extends Component {
     width: number,
     height: number,
   ): void {
-    if (layerNode.parent !== this.node) {
+    if (!layerNode.parent) {
       layerNode.parent = this.node;
     }
 
@@ -366,6 +367,37 @@ export class MainSceneController extends Component {
     const transform =
       layerNode.getComponent(UITransform) ?? layerNode.addComponent(UITransform);
     transform.setContentSize(width, height);
+  }
+
+  /**
+   * 在当前场景树中按名称递归查找节点。
+   * 分层后目标组件可能挂在 `WorldRoot` 或 `ScreenUiRoot` 下，不能再只查直接子节点。
+   */
+  private findDescendantByName(rootNode: Node, nodeName: string): Node | null {
+    if (rootNode.name === nodeName) {
+      return rootNode;
+    }
+
+    for (const childNode of rootNode.children) {
+      const matchedNode = this.findDescendantByName(childNode, nodeName);
+      if (matchedNode) {
+        return matchedNode;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 仅当两个节点同父级时同步层级顺序。
+   * 旧场景兜底节点可能仍直接挂在 `ContentRoot` 下，跨父级强设顺序没有意义。
+   */
+  private syncLayerSiblingIndex(layerNode: Node, anchorNode: Node): void {
+    if (layerNode.parent !== anchorNode.parent) {
+      return;
+    }
+
+    layerNode.setSiblingIndex(anchorNode.getSiblingIndex());
   }
 
   private formatRecruitmentFailureMessage(
@@ -408,9 +440,8 @@ export class MainSceneController extends Component {
       this.latestRecruitmentFeedback = '清档失败，请检查控制台日志';
       if (this.runtimeGameState) {
         this.refreshRecruitmentOverlay(this.runtimeGameState, this.sceneVisualNodes);
-      } else {
-        this.sceneVisualNodes.sheepStatusLabel.string = this.latestRecruitmentFeedback;
       }
+      this.sceneVisualNodes.statusView.showMessage(this.latestRecruitmentFeedback);
       return;
     }
 
@@ -428,6 +459,7 @@ export class MainSceneController extends Component {
       : '存档已清除，但新档写回失败';
     this.refreshCoreHud(bootResult.gameState, this.sceneVisualNodes);
     this.refreshRecruitmentOverlay(bootResult.gameState, this.sceneVisualNodes);
+    this.sceneVisualNodes.statusView.showMessage(this.latestRecruitmentFeedback);
     void this.renderMapSheepSprites(bootResult.gameState, this.sceneVisualNodes);
   };
 
@@ -441,6 +473,7 @@ export class MainSceneController extends Component {
     if (!requestedSheepId) {
       this.latestRecruitmentFeedback = '当前地图招聘入口尚未开放';
       this.refreshRecruitmentOverlay(this.runtimeGameState, this.sceneVisualNodes);
+      this.sceneVisualNodes.statusView.showMessage(this.latestRecruitmentFeedback);
       return;
     }
 
@@ -460,6 +493,7 @@ export class MainSceneController extends Component {
         purchaseResult.reason,
       );
       this.refreshRecruitmentOverlay(this.runtimeGameState, this.sceneVisualNodes);
+      this.sceneVisualNodes.statusView.showMessage(this.latestRecruitmentFeedback);
       return;
     }
 
@@ -469,6 +503,7 @@ export class MainSceneController extends Component {
     this.latestRecruitmentFeedback =
       `${purchaseResult.purchasedSheep.sheepId} ${GAME_CONFIG.sheepDefinitions[requestedSheepId].displayName} 招聘成功`;
     this.refreshRecruitmentOverlay(purchaseResult.gameState, this.sceneVisualNodes);
+    this.sceneVisualNodes.statusView.showMessage(this.latestRecruitmentFeedback);
     void this.renderMapSheepSprites(purchaseResult.gameState, this.sceneVisualNodes);
 
     this.persistGameState(purchaseResult.gameState, 'recruitment purchase');

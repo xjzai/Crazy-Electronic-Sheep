@@ -408,7 +408,7 @@ flowchart TD
 
 ## 14. 2026-05-19 主场景基础视图拆分
 
-- 主场景基础布局已从 `MainSceneController` 拆为 `MainSceneFoundationView` 运行时组件；该组件负责 Canvas/Camera 尺寸同步、兜底背景、`map_01` 背景贴图、HUD 根节点、羊贴图锚点、状态条、测试清档按钮和启动失败画面。
+- 主场景基础布局已从 `MainSceneController` 拆为 `MainSceneFoundationView` 运行时组件；该组件负责 Canvas/Camera 尺寸同步、兜底背景、`map_01` 背景贴图、HUD 根节点、羊贴图锚点、顶部提示文案、测试清档按钮和启动失败画面。
 - `MainSceneController` 不再直接持有背景资源路径、设计分辨率、布局缩放、基础 UI 节点创建包装或 `resources.load` 背景加载逻辑；这些表现层细节集中在基础视图组件中。
 - `MainSceneController` 当前继续保留启动协调、业务状态写入、招聘购买入口、自动产出回调和各运行时组件装配职责；后续可继续把招聘购买流程与格式化展示工具拆到更小模块。
 - 本轮不改变存档结构、玩法规则、资源数值或已接入素材，只调整主场景表现层与协调层的职责边界。
@@ -417,10 +417,18 @@ flowchart TD
 
 - `MainScene.scene` 的 `ContentRoot` 现在不只挂载 `MainSceneController`，还直接挂载 `MainSceneFoundationView` 与 `MainSceneIdleProductionLoop`。
 - `MainSceneController` 通过 Cocos `@property` 序列化字段引用上述两个组件；运行时仍保留 `getComponent/addComponent` 兜底，避免旧场景资产或手动解绑时启动失败。
-- `ContentRoot` 下已预挂载 `BackgroundRoot`、`CoreHudRoot`、`SheepArtAnchor`、`SheepStatusRoot` 和 `DebugControlsRoot` 这批固定根节点；`MainSceneFoundationView` 通过 `@property` 引用它们，不再依赖 `removeAllChildren()` 重建整棵主场景节点。
-- `CoreHudRoot` 已直接挂载 `MainSceneHudView`；其下已预挂载 `IdleEnergyHud`、`HighestUnlockedHud`、对应贴图挂点、文本层以及 `IdleEnergyValueLabel`、`GlobalIdleEnergyPerSecondValueLabel`、`SheepDiamondValueLabel` 三个 `cc.Label` 节点。
-- `MainSceneHudView` 通过 `@property` 引用这些 HUD 内部节点和 Label 组件；运行时只负责按设备尺寸同步位置/尺寸、刷新文本和异步挂载面板贴图。
-- `ContentRoot` 下已新增 `MapSheepLayerRoot` 和 `RecruitmentPanelRoot`，分别直接挂载 `MainSceneMapSheepLayerView` 与 `MainSceneRecruitmentPanelView`；`MainSceneController` 通过 `@property` 引用这两个表现组件，不再默认运行时创建它们。
-- `MainSceneFoundationView` 的清理边界已收紧为只清理自己管理的根节点内部内容，不再销毁 `ContentRoot` 上其他场景挂载节点，避免误删地图羊群层和招聘弹窗层。
+- `ContentRoot` 下已新增 `WorldRoot` 与 `ScreenUiRoot` 两个一级根节点，用于区分“随游戏世界内容组织的节点”和“固定在手机屏幕 UI 上的节点”。
+- `WorldRoot` 下已预挂载 `BackgroundRoot`、`SheepArtAnchor` 和 `MapSheepLayerRoot`；背景、羊锚点和地图羊群表现层都属于地图/世界内容。
+- `ScreenUiRoot` 下已预挂载 `CoreHudRoot`、`SheepStatusRoot`、`DebugControlsRoot` 和 `RecruitmentPanelRoot`；HUD、顶部提示文案、调试入口和招聘弹窗都属于屏幕 UI。
+- `MainSceneFoundationView` 通过 `@property` 引用 `WorldRoot`、`ScreenUiRoot` 以及基础视图根节点，不再依赖 `removeAllChildren()` 重建整棵主场景节点。
+- `CoreHudRoot` 已直接挂载 `MainSceneHudView`；其下已预挂载 `IdleEnergyHud`、`HighestUnlockedHud`、对应贴图挂点、`IdleEnergyHudSprite`、`HighestUnlockedHudSprite`、文本层以及 `IdleEnergyValueLabel`、`GlobalIdleEnergyPerSecondValueLabel`、`SheepDiamondValueLabel` 三个 `cc.Label` 节点。
+- `MainSceneHudView` 通过 `@property` 引用这些 HUD 内部节点、Label 组件、摸鱼能量 HUD 面板 `SpriteFrame` / `Sprite` 和羊钻 HUD 面板 `SpriteFrame` / `Sprite`；运行时只负责按设备尺寸同步位置/尺寸、刷新文本并更新已绑定图片节点。
+- `SheepStatusRoot` 下已直接挂载 `MainSceneStatusView`，并预挂载纯文字 `SheepStatusLabel`；顶部提示的文本更新、显隐控制与“停留后上浮淡出”动画已从 `MainSceneFoundationView` 拆到独立状态组件中，基础视图只保留根节点挂载与兜底装配职责。
+- `DebugControlsRoot` 下已直接挂载 `MainSceneDebugControlsView`，并预挂载 `ClearSaveButton` 与 `ClearSaveButtonLabel`；按钮位置、尺寸和文字节点由 Cocos 场景承载，组件只负责旧场景缺节点兜底、根据当前节点尺寸用 `Graphics` 重画圆角底板，以及把点击回调转发给主场景控制器的清档逻辑。
+- `MainSceneFoundationView` 已通过 `@property(SpriteFrame)` 和 `@property(Sprite)` 绑定 `map_01` 背景图；`BackgroundArtLayer` 与 `Map01BackgroundSprite` 已进入场景层级面板，如果旧场景未绑定这些字段，仍会使用原 `resources.load` 路径兜底，保证旧场景预览不中断。
+- `MapSheepLayerRoot` 和 `RecruitmentPanelRoot` 分别直接挂载 `MainSceneMapSheepLayerView` 与 `MainSceneRecruitmentPanelView`；`MainSceneController` 通过 `@property` 引用这两个表现组件，不再默认运行时创建它们。
+- `RecruitmentPanelRoot` 下已继续预挂载招聘入口与弹窗的稳定子节点：`RecruitButton`、`RecruitmentModalRoot`、`RecruitmentModalMask`、`RecruitmentPanel`、`RecruitmentPanelFrame`、`RecruitmentTitleSprite`、`RecruitmentCloseButton`、双招聘卡、翻页按钮、页码指示器和容量文案；底部独立反馈文案已移除，招聘结果统一走主场景顶部提示。`MainSceneRecruitmentPanelView` 运行时只负责显隐切换、按钮回调、容量文字与卡片文本刷新、动态卡面资源更新和旧场景缺节点兜底。
+- `MainSceneController` 的场景层查找已支持递归查找，并且只在节点缺少父级时才兜底挂回 `ContentRoot`，避免破坏 Cocos 层级面板中已经组织好的 `WorldRoot` / `ScreenUiRoot` 父子关系。
+- `MainSceneFoundationView` 的清理边界已进一步收紧为“只清理基础视图自己管理的运行时临时节点，保留场景预挂载子节点”；当前基础视图不再靠节点名字白名单判断哪些该保留，而是统一依赖 `uiNodeFactory` 为运行时代码创建的 fallback 节点打标，再由 `clearManagedRootChildren(...)` 只清 direct child 里带标记的节点。这样 HUD、顶部提示文本、清档按钮和招聘弹窗稳定结构都不会在 rebuild 时被运行时代码误删。
 - 当前切片仍保留运行时兜底：如果旧场景资产缺少上述节点或组件，控制器和基础视图会按同名节点查找或临时创建，保证预览不中断。
 - 本轮不改变 `GameState` 持久化结构、业务规则、资源数值或本地存档兼容性。

@@ -6,18 +6,26 @@ import {
   Label,
   Node,
   resources,
+  Sprite,
   SpriteFrame,
   UITransform,
   Vec3,
   view,
 } from 'cc';
+import { MainSceneDebugControlsView } from './MainSceneDebugControlsView';
 import { MainSceneHudView } from './MainSceneHudView';
 import {
-  createLabel,
+  MainSceneStatusView,
+  STATUS_MESSAGE_ROOT_HEIGHT,
+  STATUS_MESSAGE_ROOT_WIDTH,
+  STATUS_MESSAGE_TOP_Y,
+} from './MainSceneStatusView';
+import {
   createLayerNode,
   createRect,
-  createRoundedRect,
-  createSpriteNode,
+  createLabel,
+  ensureSpriteNode,
+  isRuntimeManagedNode,
 } from './uiNodeFactory';
 
 const { ccclass, property } = _decorator;
@@ -54,8 +62,8 @@ const SHEEP_001_DISPLAY_HEIGHT = 120;
 export interface MainSceneVisualNodes {
   backgroundArtLayer: Node;
   sheepArtAnchor: Node;
-  sheepStatusLabel: Label;
   hudView: MainSceneHudView;
+  statusView: MainSceneStatusView;
 }
 
 /**
@@ -100,11 +108,38 @@ interface MainSceneMountedRoots {
 @ccclass('MainSceneFoundationView')
 export class MainSceneFoundationView extends Component {
   /**
+   * 记录哪些固定挂点是运行时兜底创建的。
+   * 这些挂点即使在后续 build 中被复用，也仍应继续使用代码默认布局，而不是被误当成场景真值冻结住。
+   */
+  private readonly runtimeFallbackNodes = new WeakSet<Node>();
+
+  /**
+   * 地图内容根节点。
+   * 背景、羊锚点和地图表现层应放在这里，语义上固定在游戏世界内容上。
+   */
+  @property(Node)
+  private worldRoot: Node | null = null;
+
+  /**
+   * 屏幕 UI 根节点。
+   * HUD、状态条、调试入口和弹窗应放在这里，语义上固定在手机屏幕 UI 上。
+   */
+  @property(Node)
+  private screenUiRoot: Node | null = null;
+
+  /**
    * 场景中预挂载的背景根节点。
    * 兜底背景和真实地图背景都会生成在这里，避免直接污染 `ContentRoot`。
    */
   @property(Node)
   private backgroundRoot: Node | null = null;
+
+  /**
+   * 场景中预挂载的真实背景贴图层。
+   * 该节点可以直接在 Cocos 层级面板中调整，运行时只同步到当前屏幕尺寸。
+   */
+  @property(Node)
+  private backgroundArtLayer: Node | null = null;
 
   /**
    * 场景中预挂载的核心 HUD 根节点。
@@ -121,6 +156,20 @@ export class MainSceneFoundationView extends Component {
   private coreHudView: MainSceneHudView | null = null;
 
   /**
+   * 第一张地图背景图的 Inspector 绑定资源。
+   * 新场景应优先在 Cocos 中拖入 SpriteFrame；缺失时才走 `resources.load` 兜底。
+   */
+  @property(SpriteFrame)
+  private map01BackgroundSpriteFrame: SpriteFrame | null = null;
+
+  /**
+   * 场景中预挂载的 `map_01` 背景图片 Sprite。
+   * 绑定后图片节点会稳定出现在层级面板里，不再每次启动都由代码重新创建。
+   */
+  @property(Sprite)
+  private map01BackgroundSprite: Sprite | null = null;
+
+  /**
    * 场景中预挂载的第一图羊表现挂点。
    * 羊实例节点由羊群视图动态维护，但根挂点位置由场景资产承载。
    */
@@ -128,11 +177,18 @@ export class MainSceneFoundationView extends Component {
   private sheepArtAnchor: Node | null = null;
 
   /**
-   * 场景中预挂载的羊状态条根节点。
-   * 当前状态徽章和文本仍运行时生成，后续可以拆为独立状态条组件。
+   * 场景中预挂载的顶部提示根节点。
+   * 该根节点只承担挂点职责，真实文本节点优先从场景资产里复用。
    */
   @property(Node)
   private sheepStatusRoot: Node | null = null;
+
+  /**
+   * 场景中预挂载的顶部提示组件。
+   * 新场景应直接挂在 `SheepStatusRoot` 上；旧场景缺失时由运行时兜底补齐。
+   */
+  @property(MainSceneStatusView)
+  private statusView: MainSceneStatusView | null = null;
 
   /**
    * 场景中预挂载的调试控件根节点。
@@ -140,6 +196,13 @@ export class MainSceneFoundationView extends Component {
    */
   @property(Node)
   private debugControlsRoot: Node | null = null;
+
+  /**
+   * 场景中预挂载的调试控件组件。
+   * 新场景应直接挂在 `DebugControlsRoot` 上；旧场景缺失时由运行时兜底补齐。
+   */
+  @property(MainSceneDebugControlsView)
+  private debugControlsView: MainSceneDebugControlsView | null = null;
 
   /**
    * 先渲染稳定的骨架层，确保真实贴图尚未加载时场景也可见。
@@ -166,7 +229,7 @@ export class MainSceneFoundationView extends Component {
     );
     this.clearManagedRootChildren(Object.values(mountedRoots));
 
-    createRect(
+    const fallbackBackground = createRect(
       mountedRoots.backgroundRoot,
       'FallbackBackground',
       new Vec3(0, 0, 0),
@@ -175,14 +238,19 @@ export class MainSceneFoundationView extends Component {
       new Color(24, 34, 44, 255),
       new Color(24, 34, 44, 255),
     );
+    // 当前会保留场景中预挂载的 `BackgroundArtLayer`，因此兜底底色必须固定压到最底层，
+    // 否则它会在 rebuild 后盖住真实地图背景图，表现成“地图消失，只剩纯色底板”。
+    fallbackBackground.setSiblingIndex(0);
 
-    const backgroundArtLayer = createLayerNode(
+    const backgroundArtLayer = this.ensureMountedNode(
+      this.backgroundArtLayer,
       mountedRoots.backgroundRoot,
       'BackgroundArtLayer',
       new Vec3(0, 0, 0),
       viewportMetrics.width,
       backgroundDisplayHeight,
     );
+    this.backgroundArtLayer = backgroundArtLayer;
 
     const hudView = this.ensureCoreHudView(mountedRoots.coreHudRoot);
     hudView.build({
@@ -191,41 +259,25 @@ export class MainSceneFoundationView extends Component {
       layoutScale: viewportMetrics.layoutScale,
     });
 
-    const sheepStatusBadge = createRoundedRect(
-      mountedRoots.sheepStatusRoot,
-      'SheepStatusBadge',
-      new Vec3(0, 0, 0),
-      scaleLayout(320),
-      scaleLayout(44),
-      scaleLayout(22),
-      new Color(251, 252, 241, 230),
-      new Color(101, 133, 61, 255),
-      scaleLayout(3),
-    );
-    const sheepStatusLabel = createLabel(
-      sheepStatusBadge,
-      'SheepStatusLabel',
-      '正在加载 001 羊素材…',
-      scaleLayout(16),
-      scaleLayout(284),
-      scaleLayout(28),
-      new Vec3(0, 0, 0),
-      new Color(88, 69, 42, 255),
-    );
+    const statusView = this.ensureStatusView(mountedRoots.sheepStatusRoot);
+    statusView.build({
+      layoutScale: viewportMetrics.layoutScale,
+      initialMessage: '正在加载 001 羊素材…',
+    });
 
-    this.createClearSaveButton(
-      mountedRoots.debugControlsRoot,
-      scaleLayout,
-      options.onClearSave,
-    );
+    const debugControlsView = this.ensureDebugControlsView(mountedRoots.debugControlsRoot);
+    debugControlsView.build({
+      layoutScale: viewportMetrics.layoutScale,
+      onClearSave: options.onClearSave,
+    });
 
     return {
       viewportMetrics,
       sceneVisualNodes: {
         backgroundArtLayer,
         sheepArtAnchor: mountedRoots.sheepArtAnchor,
-        sheepStatusLabel,
         hudView,
+        statusView,
       },
     };
   }
@@ -305,9 +357,12 @@ export class MainSceneFoundationView extends Component {
     );
 
     try {
-      const spriteFrame = await this.loadSpriteFrame(MAP_01_BACKGROUND_RESOURCE);
-      createSpriteNode(
+      const spriteFrame =
+        this.map01BackgroundSpriteFrame ??
+        (await this.loadSpriteFrame(MAP_01_BACKGROUND_RESOURCE));
+      this.map01BackgroundSprite = ensureSpriteNode(
         backgroundArtLayer,
+        this.map01BackgroundSprite,
         'Map01BackgroundSprite',
         spriteFrame,
         new Vec3(0, 0, 0),
@@ -320,41 +375,6 @@ export class MainSceneFoundationView extends Component {
   }
 
   /**
-   * 测试期保留一个极简清档按钮，方便快速回到新档开局。
-   * 这里只注册回调，不直接触碰业务状态或存档仓库。
-   */
-  private createClearSaveButton(
-    debugControlsRoot: Node,
-    scaleLayout: (value: number) => number,
-    onClearSave: () => void,
-  ): void {
-    const clearSaveButton = createRoundedRect(
-      debugControlsRoot,
-      'ClearSaveButton',
-      new Vec3(0, 0, 0),
-      scaleLayout(128),
-      scaleLayout(46),
-      scaleLayout(18),
-      new Color(255, 244, 236, 245),
-      new Color(176, 88, 64, 255),
-      scaleLayout(3),
-    );
-    createLabel(
-      clearSaveButton,
-      'ClearSaveButtonLabel',
-      '清档重开',
-      scaleLayout(16),
-      scaleLayout(108),
-      scaleLayout(28),
-      new Vec3(0, 0, 0),
-      new Color(122, 56, 40, 255),
-      Label.HorizontalAlign.CENTER,
-      true,
-    );
-    clearSaveButton.on(Node.EventType.TOUCH_END, onClearSave);
-  }
-
-  /**
    * 统一准备场景中预挂载的根节点。
    * 如果用户打开旧场景或误删节点，运行时会按同名节点查找或兜底创建，保证预览不中断。
    */
@@ -364,8 +384,25 @@ export class MainSceneFoundationView extends Component {
     backgroundDisplayHeight: number,
     mapVisibleHeight: number,
   ): MainSceneMountedRoots {
+    const worldRoot = this.ensureMountedNode(
+      this.worldRoot,
+      this.node,
+      'WorldRoot',
+      new Vec3(0, 0, 0),
+      viewportMetrics.width,
+      viewportMetrics.height,
+    );
+    const screenUiRoot = this.ensureMountedNode(
+      this.screenUiRoot,
+      this.node,
+      'ScreenUiRoot',
+      new Vec3(0, 0, 30),
+      viewportMetrics.width,
+      viewportMetrics.height,
+    );
     const backgroundRoot = this.ensureMountedNode(
       this.backgroundRoot,
+      worldRoot,
       'BackgroundRoot',
       new Vec3(0, 0, 0),
       viewportMetrics.width,
@@ -373,6 +410,7 @@ export class MainSceneFoundationView extends Component {
     );
     const coreHudRoot = this.ensureMountedNode(
       this.coreHudRoot,
+      screenUiRoot,
       'CoreHudRoot',
       new Vec3(0, 0, 10),
       viewportMetrics.width,
@@ -380,6 +418,7 @@ export class MainSceneFoundationView extends Component {
     );
     const sheepArtAnchor = this.ensureMountedNode(
       this.sheepArtAnchor,
+      worldRoot,
       'SheepArtAnchor',
       new Vec3(0, scaleLayout(-275), 0),
       SHEEP_001_DISPLAY_WIDTH,
@@ -387,13 +426,16 @@ export class MainSceneFoundationView extends Component {
     );
     const sheepStatusRoot = this.ensureMountedNode(
       this.sheepStatusRoot,
+      screenUiRoot,
       'SheepStatusRoot',
-      new Vec3(0, scaleLayout(-430), 0),
-      scaleLayout(320),
-      scaleLayout(44),
+      new Vec3(0, scaleLayout(STATUS_MESSAGE_TOP_Y), 0),
+      scaleLayout(STATUS_MESSAGE_ROOT_WIDTH),
+      scaleLayout(STATUS_MESSAGE_ROOT_HEIGHT),
+      true,
     );
     const debugControlsRoot = this.ensureMountedNode(
       this.debugControlsRoot,
+      screenUiRoot,
       'DebugControlsRoot',
       new Vec3(
         -Math.round(viewportMetrics.width / 2) + scaleLayout(84),
@@ -402,8 +444,11 @@ export class MainSceneFoundationView extends Component {
       ),
       scaleLayout(128),
       scaleLayout(46),
+      true,
     );
 
+    this.worldRoot = worldRoot;
+    this.screenUiRoot = screenUiRoot;
     this.backgroundRoot = backgroundRoot;
     this.coreHudRoot = coreHudRoot;
     this.sheepArtAnchor = sheepArtAnchor;
@@ -425,38 +470,96 @@ export class MainSceneFoundationView extends Component {
    */
   private ensureMountedNode(
     configuredNode: Node | null,
+    parentNode: Node,
     fallbackName: string,
     position: Vec3,
     width: number,
     height: number,
+    preferSceneAuthoredLayout = false,
   ): Node {
+    // 旧场景可能还把固定根直接挂在 ContentRoot 下；分层初始化时复用后再重挂，避免生成重复节点。
     const existingNode =
-      configuredNode?.isValid ? configuredNode : this.node.getChildByName(fallbackName);
+      configuredNode?.isValid
+        ? configuredNode
+        : parentNode.getChildByName(fallbackName) ??
+          (parentNode === this.node ? null : this.node.getChildByName(fallbackName));
     const mountedNode =
-      existingNode ?? createLayerNode(this.node, fallbackName, position, width, height);
+      existingNode ?? createLayerNode(parentNode, fallbackName, position, width, height);
 
-    if (mountedNode.parent !== this.node) {
-      mountedNode.parent = this.node;
+    if (!existingNode) {
+      this.runtimeFallbackNodes.add(mountedNode);
     }
 
-    mountedNode.setPosition(position);
-    const transform =
-      mountedNode.getComponent(UITransform) ?? mountedNode.addComponent(UITransform);
-    transform.setContentSize(width, height);
+    if (mountedNode.parent !== parentNode) {
+      mountedNode.parent = parentNode;
+    }
+
+    if (!existingNode || !preferSceneAuthoredLayout || this.runtimeFallbackNodes.has(mountedNode)) {
+      mountedNode.setPosition(position);
+      const transform =
+        mountedNode.getComponent(UITransform) ?? mountedNode.addComponent(UITransform);
+      transform.setContentSize(width, height);
+    }
 
     return mountedNode;
   }
 
   /**
    * 只清理基础视图自己管理的根节点内部内容。
-   * 不再销毁 `ContentRoot` 的其他子节点，避免误删地图羊群层、招聘弹窗层等场景挂载组件。
+   * 只删除运行时代码创建的 direct child，保留 Cocos 场景里已经预挂载好的稳定结构。
    */
   private clearManagedRootChildren(managedRoots: Node[]): void {
     for (const rootNode of managedRoots) {
-      if (rootNode.isValid) {
-        rootNode.removeAllChildren();
+      if (!rootNode.isValid) {
+        continue;
+      }
+
+      for (const childNode of [...rootNode.children]) {
+        if (!childNode.isValid) {
+          continue;
+        }
+
+        if (!isRuntimeManagedNode(childNode)) {
+          continue;
+        }
+
+        childNode.destroy();
       }
     }
+  }
+
+  /**
+   * 获取挂在顶部提示根节点上的状态提示组件。
+   * 新场景通过 Inspector 绑定，旧场景或测试场景则运行时兜底补齐。
+   */
+  private ensureStatusView(sheepStatusRoot: Node): MainSceneStatusView {
+    if (this.statusView?.isValid && this.statusView.node.isValid) {
+      return this.statusView;
+    }
+
+    const statusView =
+      sheepStatusRoot.getComponent(MainSceneStatusView) ??
+      sheepStatusRoot.addComponent(MainSceneStatusView);
+    this.statusView = statusView;
+    return statusView;
+  }
+
+  /**
+   * 获取挂在调试控件根节点上的视图组件。
+   * 新场景通过 Inspector 绑定，旧场景或测试场景则运行时兜底补齐。
+   */
+  private ensureDebugControlsView(
+    debugControlsRoot: Node,
+  ): MainSceneDebugControlsView {
+    if (this.debugControlsView?.isValid && this.debugControlsView.node.isValid) {
+      return this.debugControlsView;
+    }
+
+    const debugControlsView =
+      debugControlsRoot.getComponent(MainSceneDebugControlsView) ??
+      debugControlsRoot.addComponent(MainSceneDebugControlsView);
+    this.debugControlsView = debugControlsView;
+    return debugControlsView;
   }
 
   /**

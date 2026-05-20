@@ -2,6 +2,8 @@ import {
   _decorator,
   Color,
   Component,
+  EventTouch,
+  Graphics,
   Label,
   Node,
   resources,
@@ -12,12 +14,7 @@ import {
 } from 'cc';
 import { GAME_CONFIG } from '../config/gameConfig';
 import { getMapSheepInstances, type GameState } from '../domain/gameStateSchema';
-import {
-  createLabel,
-  createLayerNode,
-  createRect,
-  createSpriteNode,
-} from './uiNodeFactory';
+import { createLayerNode, ensureSpriteNode } from './uiNodeFactory';
 
 const { ccclass } = _decorator;
 
@@ -68,6 +65,7 @@ interface RecruitmentCardControls {
   idleProductionLabel: Label;
   priceLabel: Label;
   purchaseButtonLabel: Label;
+  purchaseButtonRoot: Node;
 }
 
 export interface MainSceneRecruitmentPanelBuildOptions {
@@ -82,16 +80,26 @@ export interface MainSceneRecruitmentPanelBuildOptions {
 export interface MainSceneRecruitmentPanelRefreshOptions {
   gameState: GameState;
   isModalVisible: boolean;
-  latestFeedback: string;
   formatIdleEnergyValue: (value: number) => string;
 }
 
 /**
  * 主场景招聘入口与招聘弹窗组件。
- * 组件只负责展示与触摸回调，不直接修改业务状态或写入存档。
+ * 布局优先由 Cocos 场景承载；只有旧场景缺节点时，才回退到运行时默认结构。
  */
 @ccclass('MainSceneRecruitmentPanelView')
 export class MainSceneRecruitmentPanelView extends Component {
+  /**
+   * 记录哪些招聘 UI 节点是运行时兜底创建的。
+   * 这些节点在后续 rebuild 时仍应继续吃 TS 默认布局，而不是被冻结为场景值。
+   */
+  private readonly runtimeFallbackNodes = new WeakSet<Node>();
+
+  /**
+   * 招聘入口按钮根节点。
+   */
+  private recruitButtonRoot: Node | null = null;
+
   /**
    * 招聘弹窗根节点。
    * 控制器通过 `refresh` 传入的显示状态决定是否激活。
@@ -114,16 +122,62 @@ export class MainSceneRecruitmentPanelView extends Component {
   private recruitmentCapacityLabel: Label | null = null;
 
   /**
-   * 最近一次招聘反馈文案。
+   * 当前弹窗开关回调。
    */
-  private recruitmentFeedbackLabel: Label | null = null;
+  private onToggleModalAction: (() => void) | null = null;
+
+  /**
+   * 当前购买回调。
+   */
+  private onPurchaseAction: (() => void) | null = null;
+
+  /**
+   * 当前“暂未开放”回调。
+   */
+  private onUnavailableAction: ((message: string) => void) | null = null;
+
+  /**
+   * 拦截触摸冒泡，避免点击弹窗内容时被外层遮罩处理。
+   */
+  private readonly stopTouchPropagation = (event: EventTouch): void => {
+    event.propagationStopped = true;
+  };
+
+  /**
+   * 打开或关闭招聘弹窗。
+   */
+  private readonly handleToggleModalTouchEnd = (event: EventTouch): void => {
+    event.propagationStopped = true;
+    this.onToggleModalAction?.();
+  };
+
+  /**
+   * 触发第一档招聘购买。
+   */
+  private readonly handlePurchaseTouchEnd = (event: EventTouch): void => {
+    event.propagationStopped = true;
+    this.onPurchaseAction?.();
+  };
+
+  /**
+   * 统一处理当前版本未开放的招聘入口。
+   */
+  private readonly handleUnavailableTouchEnd = (event: EventTouch): void => {
+    event.propagationStopped = true;
+    this.onUnavailableAction?.('当前版本仅开放第一档招聘');
+  };
 
   /**
    * 构建招聘入口按钮与弹窗节点树。
    * 输入是主场景尺寸和控制器回调，输出保存在组件字段中供后续刷新。
    */
   public build(options: MainSceneRecruitmentPanelBuildOptions): void {
-    this.node.removeAllChildren();
+    this.onToggleModalAction = options.onToggleModal;
+    this.onPurchaseAction = options.onPurchase;
+    this.onUnavailableAction = options.onUnavailableAction;
+
+    const rootTransform = this.node.getComponent(UITransform) ?? this.node.addComponent(UITransform);
+    rootTransform.setContentSize(options.viewportWidth, options.viewportHeight);
 
     const scaleLayout = (value: number) => Math.round(value * options.layoutScale);
     const recruitButtonWidth = Math.min(
@@ -145,22 +199,26 @@ export class MainSceneRecruitmentPanelView extends Component {
         scaleLayout(36),
       -Math.round(options.viewportHeight * 0.24),
     );
-    const recruitButtonRoot = createLayerNode(
+    this.recruitButtonRoot = this.ensureMountedNode(
+      this.recruitButtonRoot,
       this.node,
       'RecruitButton',
       new Vec3(recruitButtonX, recruitButtonY, 20),
       recruitButtonWidth,
       recruitButtonHeight,
+      true,
     );
     this.attachSpriteByResource(
-      recruitButtonRoot,
+      this.recruitButtonRoot,
       'RecruitButtonSprite',
       RECRUITMENT_MAIN_BUTTON_RESOURCE,
       new Vec3(0, 0, 0),
       recruitButtonWidth,
       recruitButtonHeight,
+      0,
+      true,
     );
-    recruitButtonRoot.on(Node.EventType.TOUCH_END, options.onToggleModal);
+    this.bindTouchEnd(this.recruitButtonRoot, this.handleToggleModalTouchEnd);
 
     const modalScale = Math.min(
       (options.viewportWidth - scaleLayout(56)) / RECRUITMENT_MODAL_FRAME_SOURCE_WIDTH,
@@ -168,39 +226,40 @@ export class MainSceneRecruitmentPanelView extends Component {
     );
     const modalWidth = Math.round(RECRUITMENT_MODAL_FRAME_SOURCE_WIDTH * modalScale);
     const modalHeight = Math.round(RECRUITMENT_MODAL_FRAME_SOURCE_HEIGHT * modalScale);
-    const modalRoot = createLayerNode(
+    this.recruitmentModalRoot = this.ensureMountedNode(
+      this.recruitmentModalRoot,
       this.node,
       'RecruitmentModalRoot',
       new Vec3(0, 0, 30),
       options.viewportWidth,
       options.viewportHeight,
+      true,
     );
-    modalRoot.active = false;
-    modalRoot.on(Node.EventType.TOUCH_END, (event) => {
-      event.propagationStopped = true;
-    });
+    this.recruitmentModalRoot.active = false;
+    this.bindTouchEnd(this.recruitmentModalRoot, this.stopTouchPropagation);
 
-    const modalMask = createRect(
-      modalRoot,
+    const modalMask = this.ensureMountedNode(
+      null,
+      this.recruitmentModalRoot,
       'RecruitmentModalMask',
       new Vec3(0, 0, 0),
       options.viewportWidth,
       options.viewportHeight,
-      new Color(12, 18, 18, 190),
-      new Color(12, 18, 18, 0),
+      true,
     );
-    modalMask.on(Node.EventType.TOUCH_END, options.onToggleModal);
+    this.ensureModalMaskGraphics(modalMask);
+    this.bindTouchEnd(modalMask, this.handleToggleModalTouchEnd);
 
-    const recruitmentPanel = createLayerNode(
-      modalRoot,
+    const recruitmentPanel = this.ensureMountedNode(
+      null,
+      this.recruitmentModalRoot,
       'RecruitmentPanel',
       new Vec3(0, scaleLayout(-18), 1),
       modalWidth,
       modalHeight,
+      true,
     );
-    recruitmentPanel.on(Node.EventType.TOUCH_END, (event) => {
-      event.propagationStopped = true;
-    });
+    this.bindTouchEnd(recruitmentPanel, this.stopTouchPropagation);
     this.attachSpriteByResource(
       recruitmentPanel,
       'RecruitmentPanelFrame',
@@ -208,6 +267,8 @@ export class MainSceneRecruitmentPanelView extends Component {
       new Vec3(0, 0, 0),
       modalWidth,
       modalHeight,
+      0,
+      true,
     );
 
     const titleWidth = Math.round(modalWidth * 0.65);
@@ -220,6 +281,7 @@ export class MainSceneRecruitmentPanelView extends Component {
       titleWidth,
       titleHeight,
       1,
+      true,
     );
 
     const closeButtonWidth = Math.round(modalWidth * 0.15);
@@ -228,7 +290,8 @@ export class MainSceneRecruitmentPanelView extends Component {
       RECRUITMENT_CLOSE_BUTTON_SOURCE_WIDTH,
       RECRUITMENT_CLOSE_BUTTON_SOURCE_HEIGHT,
     );
-    const closeButtonRoot = createLayerNode(
+    const closeButtonRoot = this.ensureMountedNode(
+      null,
       recruitmentPanel,
       'RecruitmentCloseButton',
       new Vec3(
@@ -238,6 +301,7 @@ export class MainSceneRecruitmentPanelView extends Component {
       ),
       closeButtonWidth,
       closeButtonHeight,
+      true,
     );
     this.attachSpriteByResource(
       closeButtonRoot,
@@ -246,8 +310,10 @@ export class MainSceneRecruitmentPanelView extends Component {
       new Vec3(0, 0, 0),
       closeButtonWidth,
       closeButtonHeight,
+      0,
+      true,
     );
-    closeButtonRoot.on(Node.EventType.TOUCH_END, options.onToggleModal);
+    this.bindTouchEnd(closeButtonRoot, this.handleToggleModalTouchEnd);
 
     const cardWidth = Math.round(modalWidth * 0.82);
     const cardHeight = this.calculateHeightByWidth(
@@ -267,7 +333,7 @@ export class MainSceneRecruitmentPanelView extends Component {
     );
     const purchaseButtonIconSize = Math.round(purchaseButtonHeight * 0.8);
 
-    this.primaryCardControls = this.createRecruitmentCard({
+    this.primaryCardControls = this.ensureRecruitmentCard({
       panel: recruitmentPanel,
       cardNodeName: 'RecruitmentPrimaryCard',
       cardY: primaryCardY,
@@ -281,10 +347,10 @@ export class MainSceneRecruitmentPanelView extends Component {
       purchaseButtonHeight,
       purchaseButtonIconSize,
       buttonOpacity: 255,
-      onTouchEnd: options.onPurchase,
+      onTouchEnd: this.handlePurchaseTouchEnd,
     });
 
-    this.secondaryCardControls = this.createRecruitmentCard({
+    this.secondaryCardControls = this.ensureRecruitmentCard({
       panel: recruitmentPanel,
       cardNodeName: 'RecruitmentSecondaryCard',
       cardY: secondaryCardY,
@@ -298,9 +364,7 @@ export class MainSceneRecruitmentPanelView extends Component {
       purchaseButtonHeight,
       purchaseButtonIconSize,
       buttonOpacity: 190,
-      onTouchEnd: () => {
-        options.onUnavailableAction('当前版本仅开放第一档招聘');
-      },
+      onTouchEnd: this.handleUnavailableTouchEnd,
     });
 
     const pageButtonY = Math.round((primaryCardY + secondaryCardY) / 2);
@@ -315,12 +379,14 @@ export class MainSceneRecruitmentPanelView extends Component {
       RECRUITMENT_PAGE_NEXT_SOURCE_WIDTH,
       RECRUITMENT_PAGE_NEXT_SOURCE_HEIGHT,
     );
-    const prevButtonRoot = createLayerNode(
+    const prevButtonRoot = this.ensureMountedNode(
+      null,
       recruitmentPanel,
       'RecruitmentPrevPageButton',
       new Vec3(-Math.round(modalWidth * 0.48), pageButtonY, 2),
       pageButtonWidth,
       prevButtonHeight,
+      true,
     );
     this.attachSpriteByResource(
       prevButtonRoot,
@@ -329,13 +395,19 @@ export class MainSceneRecruitmentPanelView extends Component {
       new Vec3(0, 0, 0),
       pageButtonWidth,
       prevButtonHeight,
+      0,
+      true,
     );
-    const nextButtonRoot = createLayerNode(
+    this.bindTouchEnd(prevButtonRoot, this.handleUnavailableTouchEnd);
+
+    const nextButtonRoot = this.ensureMountedNode(
+      null,
       recruitmentPanel,
       'RecruitmentNextPageButton',
       new Vec3(Math.round(modalWidth * 0.46), pageButtonY, 2),
       pageButtonWidth,
       nextButtonHeight,
+      true,
     );
     this.attachSpriteByResource(
       nextButtonRoot,
@@ -344,13 +416,10 @@ export class MainSceneRecruitmentPanelView extends Component {
       new Vec3(0, 0, 0),
       pageButtonWidth,
       nextButtonHeight,
+      0,
+      true,
     );
-    prevButtonRoot.on(Node.EventType.TOUCH_END, () => {
-      options.onUnavailableAction('当前页只开放第一档招聘');
-    });
-    nextButtonRoot.on(Node.EventType.TOUCH_END, () => {
-      options.onUnavailableAction('当前页只开放第一档招聘');
-    });
+    this.bindTouchEnd(nextButtonRoot, this.handleUnavailableTouchEnd);
 
     const indicatorWidth = Math.round(modalWidth * 0.18);
     const indicatorHeight = this.calculateHeightByWidth(
@@ -366,9 +435,11 @@ export class MainSceneRecruitmentPanelView extends Component {
       indicatorWidth,
       indicatorHeight,
       1,
+      true,
     );
 
-    this.recruitmentCapacityLabel = createLabel(
+    this.recruitmentCapacityLabel = this.ensureMountedLabel(
+      this.recruitmentCapacityLabel,
       recruitmentPanel,
       'RecruitmentCapacityLabel',
       '当前羊数 1/20',
@@ -379,38 +450,21 @@ export class MainSceneRecruitmentPanelView extends Component {
       new Color(112, 93, 44, 255),
       Label.HorizontalAlign.CENTER,
       true,
-    );
-    this.recruitmentFeedbackLabel = createLabel(
-      recruitmentPanel,
-      'RecruitmentFeedbackLabel',
-      '当前地图第一档招聘已接入',
-      Math.max(13, scaleLayout(14)),
-      Math.round(modalWidth * 0.78),
-      Math.round(modalHeight * 0.08),
-      new Vec3(0, -Math.round(modalHeight / 2) + Math.round(modalHeight * 0.05), 2),
-      new Color(88, 69, 42, 255),
-      Label.HorizontalAlign.CENTER,
       true,
     );
-
-    this.recruitmentModalRoot = modalRoot;
   }
 
   /**
-   * 刷新招聘卡、容量和反馈文案。
-   * 返回当前应该同步到主场景状态条的反馈文本。
+   * 刷新招聘卡、容量和弹窗显隐。
+   * 反馈提示已经统一上收至主场景顶部飘字，因此弹窗底部不再保留独立反馈文案。
    */
-  public refresh(options: MainSceneRecruitmentPanelRefreshOptions): string {
+  public refresh(options: MainSceneRecruitmentPanelRefreshOptions): void {
     const currentMapDefinition = GAME_CONFIG.maps[options.gameState.currentMapId];
     const currentMapSheepCount = getMapSheepInstances(
       options.gameState,
       options.gameState.currentMapId,
     ).length;
     const requestedSheepId = currentMapDefinition.defaultPurchasableSheepIds[0];
-    const fallbackMessage = requestedSheepId
-      ? `当前羊数 ${currentMapSheepCount}/${currentMapDefinition.maxSheepCapacity}`
-      : '当前地图招聘入口尚未开放';
-    const feedbackMessage = options.latestFeedback || fallbackMessage;
 
     if (this.recruitmentModalRoot?.isValid) {
       this.recruitmentModalRoot.active = options.isModalVisible;
@@ -452,14 +506,12 @@ export class MainSceneRecruitmentPanelView extends Component {
       this.recruitmentCapacityLabel.string =
         `当前羊数 ${currentMapSheepCount}/${currentMapDefinition.maxSheepCapacity}`;
     }
-    if (this.recruitmentFeedbackLabel) {
-      this.recruitmentFeedbackLabel.string = feedbackMessage;
-    }
-
-    return feedbackMessage;
   }
 
-  private createRecruitmentCard(options: {
+  /**
+   * 查找或创建一张招聘卡，并把固定布局节点都收口到场景或运行时兜底结构里。
+   */
+  private ensureRecruitmentCard(options: {
     panel: Node;
     cardNodeName: string;
     cardY: number;
@@ -473,14 +525,16 @@ export class MainSceneRecruitmentPanelView extends Component {
     purchaseButtonHeight: number;
     purchaseButtonIconSize: number;
     buttonOpacity: number;
-    onTouchEnd: () => void;
+    onTouchEnd: (event: EventTouch) => void;
   }): RecruitmentCardControls {
-    const cardRoot = createLayerNode(
+    const cardRoot = this.ensureMountedNode(
+      null,
       options.panel,
       options.cardNodeName,
       new Vec3(0, options.cardY, 2),
       options.cardWidth,
       options.cardHeight,
+      true,
     );
     this.attachSpriteByResource(
       cardRoot,
@@ -489,14 +543,18 @@ export class MainSceneRecruitmentPanelView extends Component {
       new Vec3(0, 0, 0),
       options.cardWidth,
       options.cardHeight,
+      0,
+      true,
     );
 
-    const artAnchor = createLayerNode(
+    const artAnchor = this.ensureMountedNode(
+      null,
       cardRoot,
       `${options.cardNodeName}ArtAnchor`,
       new Vec3(-Math.round(options.cardWidth * 0.24), 0, 1),
       options.artAnchorWidth,
       options.artAnchorHeight,
+      true,
     );
     const artDefinition = this.getRecruitmentCardArtResource(options.previewSheepId);
     this.attachRecruitmentCardArt(
@@ -509,7 +567,8 @@ export class MainSceneRecruitmentPanelView extends Component {
       options.artAnchorHeight,
     );
 
-    const sheepNameLabel = createLabel(
+    const sheepNameLabel = this.ensureMountedLabel(
+      null,
       cardRoot,
       `${options.cardNodeName}SheepNameLabel`,
       `${options.previewSheepId} 预览羊`,
@@ -520,6 +579,7 @@ export class MainSceneRecruitmentPanelView extends Component {
       new Color(72, 102, 33, 255),
       Label.HorizontalAlign.LEFT,
       true,
+      true,
     );
     this.attachSpriteByResource(
       cardRoot,
@@ -529,8 +589,10 @@ export class MainSceneRecruitmentPanelView extends Component {
       Math.round(options.cardHeight * 0.15),
       Math.round(options.cardHeight * 0.15),
       1,
+      true,
     );
-    const idleProductionLabel = createLabel(
+    const idleProductionLabel = this.ensureMountedLabel(
+      null,
       cardRoot,
       `${options.cardNodeName}IdleProductionLabel`,
       '+1/秒',
@@ -541,8 +603,10 @@ export class MainSceneRecruitmentPanelView extends Component {
       new Color(132, 112, 42, 255),
       Label.HorizontalAlign.LEFT,
       true,
+      true,
     );
-    const priceLabel = createLabel(
+    const priceLabel = this.ensureMountedLabel(
+      null,
       cardRoot,
       `${options.cardNodeName}PriceLabel`,
       '消耗 10',
@@ -553,9 +617,11 @@ export class MainSceneRecruitmentPanelView extends Component {
       new Color(112, 93, 44, 255),
       Label.HorizontalAlign.LEFT,
       true,
+      true,
     );
 
-    const purchaseButtonRoot = createLayerNode(
+    const purchaseButtonRoot = this.ensureMountedNode(
+      null,
       cardRoot,
       `${options.cardNodeName}PurchaseButton`,
       new Vec3(
@@ -565,6 +631,7 @@ export class MainSceneRecruitmentPanelView extends Component {
       ),
       options.purchaseButtonWidth,
       options.purchaseButtonHeight,
+      true,
     );
     this.attachSpriteByResource(
       purchaseButtonRoot,
@@ -573,10 +640,10 @@ export class MainSceneRecruitmentPanelView extends Component {
       new Vec3(0, 0, 0),
       options.purchaseButtonWidth,
       options.purchaseButtonHeight,
+      0,
+      true,
     );
-    if (options.buttonOpacity < 255) {
-      purchaseButtonRoot.addComponent(UIOpacity).opacity = options.buttonOpacity;
-    }
+    this.ensureNodeOpacity(purchaseButtonRoot, options.buttonOpacity);
     this.attachSpriteByResource(
       purchaseButtonRoot,
       `${options.cardNodeName}PurchaseButtonIcon`,
@@ -585,8 +652,10 @@ export class MainSceneRecruitmentPanelView extends Component {
       options.purchaseButtonIconSize,
       options.purchaseButtonIconSize,
       1,
+      true,
     );
-    const purchaseButtonLabel = createLabel(
+    const purchaseButtonLabel = this.ensureMountedLabel(
+      null,
       purchaseButtonRoot,
       `${options.cardNodeName}PurchaseButtonLabel`,
       '购买 10',
@@ -597,8 +666,9 @@ export class MainSceneRecruitmentPanelView extends Component {
       new Color(255, 251, 232, 255),
       Label.HorizontalAlign.LEFT,
       true,
+      true,
     );
-    purchaseButtonRoot.on(Node.EventType.TOUCH_END, options.onTouchEnd);
+    this.bindTouchEnd(purchaseButtonRoot, options.onTouchEnd);
 
     return {
       artAnchor,
@@ -607,9 +677,13 @@ export class MainSceneRecruitmentPanelView extends Component {
       idleProductionLabel,
       priceLabel,
       purchaseButtonLabel,
+      purchaseButtonRoot,
     };
   }
 
+  /**
+   * 刷新一张招聘卡的文案和卡面资源。
+   */
   private refreshRecruitmentCardContent(
     sheepId: string | undefined,
     controls: RecruitmentCardControls,
@@ -647,6 +721,9 @@ export class MainSceneRecruitmentPanelView extends Component {
       )}`;
   }
 
+  /**
+   * 根据当前招聘卡展示的羊编号刷新卡面贴图。
+   */
   private refreshRecruitmentCardArt(
     artAnchor: Node,
     artNodeName: string,
@@ -669,6 +746,9 @@ export class MainSceneRecruitmentPanelView extends Component {
     );
   }
 
+  /**
+   * 返回招聘卡当前应该展示的羊卡资源。
+   */
   private getRecruitmentCardArtResource(requestedSheepId: string | undefined): {
     resourcePath: string;
     sourceWidth: number;
@@ -697,30 +777,10 @@ export class MainSceneRecruitmentPanelView extends Component {
     }
   }
 
-  private attachSpriteByResource(
-    parent: Node,
-    name: string,
-    resourcePath: string,
-    position: Vec3,
-    width: number,
-    height: number,
-    siblingIndex = 0,
-  ): void {
-    void this.loadSpriteFrame(resourcePath)
-      .then((spriteFrame) => {
-        if (!parent.isValid) {
-          return;
-        }
-
-        parent.getChildByName(name)?.destroy();
-        const sprite = createSpriteNode(parent, name, spriteFrame, position, width, height);
-        sprite.node.setSiblingIndex(siblingIndex);
-      })
-      .catch((error) => {
-        console.error(`[MainSceneRecruitmentPanelView] sprite load failed: ${resourcePath}`, error);
-      });
-  }
-
+  /**
+   * 以卡面锚点为边界刷新招聘卡展示图。
+   * 该贴图尺寸依赖羊卡资源比例，因此保持运行时动态计算。
+   */
   private attachRecruitmentCardArt(
     parent: Node,
     name: string,
@@ -741,9 +801,201 @@ export class MainSceneRecruitmentPanelView extends Component {
       new Vec3(0, 0, 0),
       displayWidth,
       displayHeight,
+      0,
+      false,
     );
   }
 
+  /**
+   * 统一绑定一个 TOUCH_END 事件，避免重复 build 时叠加回调。
+   */
+  private bindTouchEnd(
+    node: Node,
+    handler: (event: EventTouch) => void,
+  ): void {
+    node.off(Node.EventType.TOUCH_END, handler, this);
+    node.on(Node.EventType.TOUCH_END, handler, this);
+  }
+
+  /**
+   * 查找或创建一个招聘 UI 固定节点，并在旧场景缺节点时使用运行时布局兜底。
+   */
+  private ensureMountedNode(
+    configuredNode: Node | null,
+    parent: Node,
+    nodeName: string,
+    position: Vec3,
+    width: number,
+    height: number,
+    preferSceneAuthoredLayout = false,
+  ): Node {
+    const existingNode =
+      configuredNode?.isValid ? configuredNode : parent.getChildByName(nodeName);
+    const mountedNode =
+      existingNode ?? createLayerNode(parent, nodeName, position, width, height);
+
+    if (!existingNode) {
+      this.runtimeFallbackNodes.add(mountedNode);
+    }
+
+    if (mountedNode.parent !== parent) {
+      mountedNode.parent = parent;
+    }
+
+    if (
+      !existingNode ||
+      !preferSceneAuthoredLayout ||
+      this.runtimeFallbackNodes.has(mountedNode)
+    ) {
+      mountedNode.setPosition(position);
+      const transform =
+        mountedNode.getComponent(UITransform) ?? mountedNode.addComponent(UITransform);
+      transform.setContentSize(width, height);
+    }
+
+    return mountedNode;
+  }
+
+  /**
+   * 查找或创建一个招聘文案节点。
+   * 场景已存在时保留编辑器中的位置、尺寸、字号和颜色；只有 fallback 节点才写默认值。
+   */
+  private ensureMountedLabel(
+    configuredLabel: Label | null,
+    parent: Node,
+    nodeName: string,
+    defaultText: string,
+    fontSize: number,
+    width: number,
+    height: number,
+    position: Vec3,
+    color: Color,
+    horizontalAlign: number,
+    isBold: boolean,
+    preferSceneAuthoredLayout = false,
+  ): Label {
+    const existingLabel =
+      configuredLabel?.isValid && configuredLabel.node.isValid
+        ? configuredLabel
+        : parent.getChildByName(nodeName)?.getComponent(Label) ?? null;
+    const labelNode =
+      existingLabel?.node ?? createLayerNode(parent, nodeName, position, width, height);
+
+    if (!existingLabel) {
+      this.runtimeFallbackNodes.add(labelNode);
+    }
+
+    if (labelNode.parent !== parent) {
+      labelNode.parent = parent;
+    }
+
+    const label = existingLabel ?? labelNode.addComponent(Label);
+    if (
+      !existingLabel ||
+      !preferSceneAuthoredLayout ||
+      this.runtimeFallbackNodes.has(labelNode)
+    ) {
+      labelNode.setPosition(position);
+      const transform =
+        labelNode.getComponent(UITransform) ?? labelNode.addComponent(UITransform);
+      transform.setContentSize(width, height);
+      label.string = defaultText;
+      label.fontSize = fontSize;
+      label.lineHeight = fontSize + 10;
+      label.color = color;
+      label.enableWrapText = true;
+      label.overflow = Label.Overflow.SHRINK;
+      label.horizontalAlign = horizontalAlign;
+      label.verticalAlign = Label.VerticalAlign.CENTER;
+      label.isBold = isBold;
+    }
+
+    return label;
+  }
+
+  /**
+   * 确保二档招聘按钮保留旧 TS 的半透明视觉，但允许场景已配置时优先使用场景值。
+   */
+  private ensureNodeOpacity(node: Node, opacity: number): void {
+    const existingOpacity = node.getComponent(UIOpacity);
+    const shouldUseRuntimeOpacity =
+      !existingOpacity || this.runtimeFallbackNodes.has(node);
+
+    const uiOpacity = existingOpacity ?? node.addComponent(UIOpacity);
+    if (shouldUseRuntimeOpacity) {
+      uiOpacity.opacity = opacity;
+    }
+  }
+
+  /**
+   * 统一挂载一个招聘面板贴图节点。
+   * 静态 UI 贴图优先保留场景节点的位置和尺寸；动态卡面贴图可按传入参数实时重算大小。
+   */
+  private attachSpriteByResource(
+    parent: Node,
+    name: string,
+    resourcePath: string,
+    position: Vec3,
+    width: number,
+    height: number,
+    siblingIndex = 0,
+    preferSceneAuthoredLayout = true,
+  ): void {
+    void this.loadSpriteFrame(resourcePath)
+      .then((spriteFrame) => {
+        if (!parent.isValid) {
+          return;
+        }
+
+        const sprite = ensureSpriteNode(
+          parent,
+          null,
+          name,
+          spriteFrame,
+          position,
+          width,
+          height,
+          preferSceneAuthoredLayout,
+          this.runtimeFallbackNodes,
+        );
+        if (this.shouldUseRuntimeLayoutForNode(sprite.node)) {
+          sprite.node.setSiblingIndex(siblingIndex);
+        }
+      })
+      .catch((error) => {
+        console.error(`[MainSceneRecruitmentPanelView] sprite load failed: ${resourcePath}`, error);
+      });
+  }
+
+  /**
+   * 为弹窗遮罩节点补上半透明背景绘制。
+   * 场景节点已存在时复用其尺寸，只刷新 Graphics 内容。
+   */
+  private ensureModalMaskGraphics(maskNode: Node): void {
+    const transform = maskNode.getComponent(UITransform);
+    if (!transform) {
+      return;
+    }
+
+    const graphics = maskNode.getComponent(Graphics) ?? maskNode.addComponent(Graphics);
+    const width = transform.contentSize.width;
+    const height = transform.contentSize.height;
+    graphics.clear();
+    graphics.fillColor = new Color(12, 18, 18, 190);
+    graphics.rect(-width / 2, -height / 2, width, height);
+    graphics.fill();
+  }
+
+  /**
+   * 判断某个节点是否仍由运行时兜底布局控制。
+   */
+  private shouldUseRuntimeLayoutForNode(node: Node | null): boolean {
+    return !!node?.isValid && this.runtimeFallbackNodes.has(node);
+  }
+
+  /**
+   * 将 `resources` 中的图片子资源统一转成 `SpriteFrame` Promise。
+   */
   private loadSpriteFrame(resourcePath: string): Promise<SpriteFrame> {
     return new Promise<SpriteFrame>((resolve, reject) => {
       resources.load(resourcePath, SpriteFrame, (error, spriteFrame) => {
@@ -757,6 +1009,9 @@ export class MainSceneRecruitmentPanelView extends Component {
     });
   }
 
+  /**
+   * 按目标显示宽度与原图比例计算高度，保证贴图不被拉伸变形。
+   */
   private calculateHeightByWidth(
     displayWidth: number,
     sourceWidth: number,

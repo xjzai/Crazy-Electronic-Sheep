@@ -118,6 +118,13 @@ This repo should be treated as single-context for engineering skills, with autho
 4. 不要把数值、平台开关、走动参数分散硬编码到多个文件。
 5. 与测试、脚本、工程化相关的变更要保持与 `pnpm`、`ESLint`、`Prettier`、`Vitest` 方案一致。
 
+## Cocos 场景资源编辑规则
+
+1. 如果任务需要在 Cocos 编辑器外直接修改 `.scene`、`.prefab` 或其他 Cocos 序列化资源，开始写文件前必须先提醒用户关闭对应场景或整个 `Cocos Creator`。
+2. 在用户明确确认“已关闭”之前，不得继续外部写入这些资源文件。
+3. 必须明确告知用户：如果 `Cocos Creator` 正开着，编辑器可能会用内存中的旧版本把磁盘文件回写覆盖，导致外部改动丢失。
+4. 外部写入完成后，必须提醒用户重新打开或重载场景，再在层级面板中确认节点与组件变更。
+
 ## Git 提交规则
 
 1. 在本仓库创建 `git commit` 时，提交信息默认使用简体中文。

@@ -122,16 +122,27 @@
 
 - 已新增 `MainSceneIdleProductionLoop` 运行时组件，把自动产出 `schedule/unschedule`、整秒补齐、owner token 保护和 `settleIdleProduction` 调用从 `MainSceneController` 拆出。
 - 已新增 `gameStateSaveService`，集中封装当前主游戏存档 key；boot、清档、购买成功和自动产出写回不再在控制器里直接拼 `GAME_CONFIG.storageKey`。
-- 已新增 `MainSceneFoundationView` 运行时组件，把 Canvas/Camera 尺寸同步、兜底背景、`map_01` 背景贴图、HUD 根节点、羊锚点、状态条、清档按钮和启动失败画面从 `MainSceneController` 拆出。
+- 已新增 `MainSceneFoundationView` 运行时组件，把 Canvas/Camera 尺寸同步、兜底背景、`map_01` 背景贴图、HUD 根节点、羊锚点、顶部提示文案、清档按钮和启动失败画面从 `MainSceneController` 拆出。
 - `MainSceneController` 当前降到约 523 行，职责进一步收敛为启动、状态协调、组件装配和少量业务入口；自动产出循环与基础场景视图已由独立 Cocos 组件持有。
 - 本轮未改动存档结构、玩法数值、购买规则和资源素材，只调整模块边界。
 - 验证状态：`npm run check` 通过，`npm test` 的 Node 逻辑测试 10 项通过。
 - 已开始从“运行时 addComponent”迁移到 Cocos 场景挂载方式：`MainScene.scene` 的 `ContentRoot` 已直接挂载 `MainSceneFoundationView` 和 `MainSceneIdleProductionLoop`，并由 `MainSceneController` 的 `@property` 字段引用。
-- 已把 `BackgroundRoot`、`CoreHudRoot`、`SheepArtAnchor`、`SheepStatusRoot` 和 `DebugControlsRoot` 作为固定根节点写入 `MainScene.scene`，并由 `MainSceneFoundationView` 的 `@property` 字段引用。
-- `CoreHudRoot` 已直接挂载 `MainSceneHudView`；稳定根节点已进入 Cocos 层级面板，HUD 内部文字/贴图、招聘弹窗和羊群表现仍由对应组件运行时创建，后续应继续迁移为 Prefab 或更细的场景节点绑定。
-- 已把 `MapSheepLayerRoot` 和 `RecruitmentPanelRoot` 写入 `MainScene.scene`，分别挂载 `MainSceneMapSheepLayerView` 与 `MainSceneRecruitmentPanelView`，并由 `MainSceneController` 的 `@property` 字段引用。
+- 已在 `ContentRoot` 下新增 `WorldRoot` 和 `ScreenUiRoot` 两个一级根节点，区分地图/世界内容与屏幕固定 UI。
+- `BackgroundRoot`、`SheepArtAnchor` 和 `MapSheepLayerRoot` 已归入 `WorldRoot`；`CoreHudRoot`、`SheepStatusRoot`、`DebugControlsRoot` 和 `RecruitmentPanelRoot` 已归入 `ScreenUiRoot`。
+- `CoreHudRoot` 已直接挂载 `MainSceneHudView`；稳定根节点已进入 Cocos 层级面板，HUD 内部文字节点和贴图挂点已进入场景节点绑定。
+- `MapSheepLayerRoot` 和 `RecruitmentPanelRoot` 分别挂载 `MainSceneMapSheepLayerView` 与 `MainSceneRecruitmentPanelView`，并由 `MainSceneController` 的 `@property` 字段引用。
+- `MainSceneController` 已支持递归查找场景挂载节点，并避免把已有父级的表现层强制挪回 `ContentRoot`，保证可视化层级调整不会在启动时被控制器覆盖。
 - `MainSceneFoundationView` 不再销毁 `ContentRoot` 的其他子节点，避免刷新基础视图时误删场景挂载的地图羊群层和招聘弹窗层。
 - 已继续迁移 HUD 内部固定层级：`CoreHudRoot` 下已有 `IdleEnergyHud`、`HighestUnlockedHud`、贴图挂点、文本层和 3 个 `cc.Label` 节点，`MainSceneHudView` 通过 `@property` 复用这些场景节点。
+- 已把 `map_01` 背景图、摸鱼能量 HUD 面板图和羊钻 HUD 面板图迁为 `@property(SpriteFrame)` 资源绑定；旧场景未绑定时仍保留 `resources.load` 路径兜底。
+- 已继续把 `map_01` 背景图、摸鱼能量 HUD 面板图和羊钻 HUD 面板图迁为场景内真实 `cc.Sprite` 节点；`BackgroundArtLayer`、`Map01BackgroundSprite`、`IdleEnergyHudSprite` 和 `HighestUnlockedHudSprite` 现在都能在 Cocos 层级面板中直接选中和调整。
+- 已把招聘入口与招聘弹窗稳定结构继续迁为场景子节点：`RecruitButton`、`RecruitmentModalRoot`、遮罩、面板框、标题、关闭按钮、双招聘卡、翻页按钮、页码指示器和容量文案都已进入 `MainScene.scene`；弹窗底部独立反馈文案已删除。
+- 招聘 UI 当前遵循“Cocos 场景优先、TS 只兜底”的规则：静态节点的位置、尺寸、字号、层级由场景承载，`MainSceneRecruitmentPanelView` 运行时只负责容量/卡片文本刷新、按钮回调、动态卡面资源更新和旧场景缺节点兜底；招聘反馈统一上收到主场景顶部提示。
+- 已把原底部带边框状态条改为顶部纯文字提示：`SheepStatusRoot` 下挂载 `MainSceneStatusView`，并预挂载 `SheepStatusLabel` 场景节点；提示文本会在顶部停留后像秒产飘字一样缓慢上浮并淡出。
+- 招聘反馈、空地图提示和清档结果已统一收口到 `MainSceneStatusView.showMessage(...)`；`MainSceneController` 不再依赖 `MainSceneFoundationView` 内部提示实现，也不再直接改场景里的 `Label.string`。
+- 已新增 `MainSceneDebugControlsView`：`DebugControlsRoot` 现在直接挂载该组件，并预挂载 `ClearSaveButton` 与 `ClearSaveButtonLabel`；`MainSceneFoundationView` 不再直接运行时创建清档按钮，调试入口改为“Cocos 场景优先、TS 只兜底”。
+- `MainSceneDebugControlsView` 会根据当前按钮节点尺寸用 `Graphics` 重画圆角底板，并把点击转发给控制器传入的 `onClearSave`；这样后续在 Cocos 里调整按钮位置或尺寸时，运行时不会再把布局强制改回旧 TS 默认值。
+- `MainSceneFoundationView` 的子节点清理策略已完成最终收口：`clearManagedRootChildren(...)` 不再靠节点名字白名单保留 `BackgroundArtLayer`、HUD 或提示条结构，而是统一只删除 `uiNodeFactory` 标记过的运行时临时节点。这样场景预挂载结构与旧场景 fallback 节点的边界更清晰，后续继续组件化时也不需要再维护一份新的保留名单。
 - 本轮新增验证状态：`MainScene.scene` JSON 解析通过，组件引用结构校验通过，`npm.cmd run check` 通过，`npm.cmd test` 的 Node 逻辑测试 10 项通过。
 
 ## 7. 2026-05-17 琛ュ厖杩涘睍

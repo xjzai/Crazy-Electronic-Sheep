@@ -5,13 +5,14 @@ import {
   Label,
   Node,
   resources,
+  Sprite,
   SpriteFrame,
   UITransform,
   Vec3,
 } from 'cc';
 import {
   createLayerNode,
-  createSpriteNode,
+  ensureSpriteNode,
 } from './uiNodeFactory';
 
 const { ccclass, property } = _decorator;
@@ -42,6 +43,12 @@ export interface MainSceneHudViewModel {
 @ccclass('MainSceneHudView')
 export class MainSceneHudView extends Component {
   /**
+   * 记录哪些 HUD 节点是运行时兜底创建的。
+   * 这些节点在后续 rebuild 时仍应继续吃 TS 计算布局，而不是被当成场景预挂载节点冻结。
+   */
+  private readonly runtimeFallbackNodes = new WeakSet<Node>();
+
+  /**
    * 摸鱼能量 HUD 面板根节点。
    * 新场景通过 Inspector 绑定，旧场景缺失时按同名节点兜底创建。
    */
@@ -61,6 +68,20 @@ export class MainSceneHudView extends Component {
    */
   @property(Node)
   private idleEnergyHudLabelLayer: Node | null = null;
+
+  /**
+   * 摸鱼能量 HUD 面板图的 Inspector 绑定资源。
+   * 绑定后运行时不再走路径加载；未绑定时保留旧资源路径兜底。
+   */
+  @property(SpriteFrame)
+  private idleEnergyHudSpriteFrame: SpriteFrame | null = null;
+
+  /**
+   * 场景中预挂载的摸鱼能量 HUD 面板 Sprite。
+   * 绑定后该图片节点可以在 Cocos 层级面板中直接选择和调整。
+   */
+  @property(Sprite)
+  private idleEnergyHudSprite: Sprite | null = null;
 
   /**
    * 摸鱼能量总量文本节点。
@@ -93,6 +114,20 @@ export class MainSceneHudView extends Component {
    */
   @property(Node)
   private sheepDiamondHudLabelLayer: Node | null = null;
+
+  /**
+   * 羊钻 HUD 面板图的 Inspector 绑定资源。
+   * 当前仍作为顶部占位资源展示，后续接入科技系统时继续复用。
+   */
+  @property(SpriteFrame)
+  private sheepDiamondHudSpriteFrame: SpriteFrame | null = null;
+
+  /**
+   * 场景中预挂载的羊钻 HUD 面板 Sprite。
+   * 当前作为顶部占位资源显示，后续接入科技系统时继续复用同一节点。
+   */
+  @property(Sprite)
+  private sheepDiamondHudSprite: Sprite | null = null;
 
   /**
    * 羊钻占位文本节点。
@@ -152,6 +187,7 @@ export class MainSceneHudView extends Component {
       new Vec3(idleEnergyHudX, diamondHudY, 0),
       idleEnergyHudWidth,
       idleEnergyHudHeight,
+      true,
     );
     this.idleEnergyHudSpriteAnchor = this.ensureMountedNode(
       this.idleEnergyHudSpriteAnchor,
@@ -160,6 +196,7 @@ export class MainSceneHudView extends Component {
       new Vec3(0, 0, 0),
       idleEnergyHudWidth,
       idleEnergyHudHeight,
+      true,
     );
     this.idleEnergyHudLabelLayer = this.ensureMountedNode(
       this.idleEnergyHudLabelLayer,
@@ -168,8 +205,11 @@ export class MainSceneHudView extends Component {
       new Vec3(0, 0, 0),
       idleEnergyHudWidth,
       idleEnergyHudHeight,
+      true,
     );
-    this.idleEnergyHudLabelLayer.setSiblingIndex(1);
+    if (this.shouldUseRuntimeLayoutForNode(this.idleEnergyHudLabelLayer)) {
+      this.idleEnergyHudLabelLayer.setSiblingIndex(1);
+    }
 
     this.idleEnergyValueLabel = this.ensureMountedLabel(
       this.idleEnergyValueLabel,
@@ -186,6 +226,7 @@ export class MainSceneHudView extends Component {
       ),
       new Color(83, 57, 35, 255),
       Label.HorizontalAlign.CENTER,
+      true,
       true,
     );
     this.globalIdleEnergyPerSecondValueLabel = this.ensureMountedLabel(
@@ -204,6 +245,7 @@ export class MainSceneHudView extends Component {
       new Color(247, 251, 239, 255),
       Label.HorizontalAlign.CENTER,
       true,
+      true,
     );
 
     this.sheepDiamondHudRoot = this.ensureMountedNode(
@@ -213,9 +255,14 @@ export class MainSceneHudView extends Component {
       new Vec3(diamondHudX, diamondHudY, 0),
       diamondHudWidth,
       diamondHudHeight,
+      true,
     );
-    this.sheepDiamondHudRoot.setSiblingIndex(0);
-    this.idleEnergyHudRoot.setSiblingIndex(1);
+    if (this.shouldUseRuntimeLayoutForNode(this.sheepDiamondHudRoot)) {
+      this.sheepDiamondHudRoot.setSiblingIndex(0);
+    }
+    if (this.shouldUseRuntimeLayoutForNode(this.idleEnergyHudRoot)) {
+      this.idleEnergyHudRoot.setSiblingIndex(1);
+    }
     this.sheepDiamondHudSpriteAnchor = this.ensureMountedNode(
       this.sheepDiamondHudSpriteAnchor,
       this.sheepDiamondHudRoot,
@@ -223,6 +270,7 @@ export class MainSceneHudView extends Component {
       new Vec3(0, 0, 0),
       diamondHudWidth,
       diamondHudHeight,
+      true,
     );
     this.sheepDiamondHudLabelLayer = this.ensureMountedNode(
       this.sheepDiamondHudLabelLayer,
@@ -231,8 +279,11 @@ export class MainSceneHudView extends Component {
       new Vec3(0, 0, 0),
       diamondHudWidth,
       diamondHudHeight,
+      true,
     );
-    this.sheepDiamondHudLabelLayer.setSiblingIndex(1);
+    if (this.shouldUseRuntimeLayoutForNode(this.sheepDiamondHudLabelLayer)) {
+      this.sheepDiamondHudLabelLayer.setSiblingIndex(1);
+    }
 
     this.sheepDiamondValueLabel = this.ensureMountedLabel(
       this.sheepDiamondValueLabel,
@@ -249,6 +300,7 @@ export class MainSceneHudView extends Component {
       ),
       new Color(95, 70, 110, 255),
       Label.HorizontalAlign.CENTER,
+      true,
       true,
     );
   }
@@ -277,45 +329,56 @@ export class MainSceneHudView extends Component {
    * 单个贴图失败只记录日志，避免 HUD 文本和主场景被阻塞。
    */
   public async attachPanelSprites(): Promise<void> {
-    await Promise.all([
+    const [idleEnergyHudSprite, sheepDiamondHudSprite] = await Promise.all([
       this.attachHudPanelSprite(
         this.idleEnergyHudSpriteAnchor,
+        this.idleEnergyHudSprite,
+        this.idleEnergyHudSpriteFrame,
         IDLE_ENERGY_HUD_RESOURCE,
         'IdleEnergyHudSprite',
       ),
       this.attachHudPanelSprite(
         this.sheepDiamondHudSpriteAnchor,
+        this.sheepDiamondHudSprite,
+        this.sheepDiamondHudSpriteFrame,
         SHEEP_DIAMOND_HUD_RESOURCE,
         'HighestUnlockedHudSprite',
       ),
     ]);
+    this.idleEnergyHudSprite = idleEnergyHudSprite ?? this.idleEnergyHudSprite;
+    this.sheepDiamondHudSprite = sheepDiamondHudSprite ?? this.sheepDiamondHudSprite;
   }
 
   private async attachHudPanelSprite(
     spriteAnchor: Node | null,
+    configuredSprite: Sprite | null,
+    configuredSpriteFrame: SpriteFrame | null,
     resourcePath: string,
     spriteNodeName: string,
-  ): Promise<void> {
+  ): Promise<Sprite | null> {
     if (!spriteAnchor?.isValid) {
-      return;
+      return null;
     }
 
     try {
-      const spriteFrame = await this.loadSpriteFrame(resourcePath);
-      spriteAnchor.getChildByName(spriteNodeName)?.destroy();
+      const spriteFrame = configuredSpriteFrame ?? (await this.loadSpriteFrame(resourcePath));
       const spriteTransform = spriteAnchor.getComponent(UITransform);
       const spriteWidth = spriteTransform?.contentSize.width ?? 0;
       const spriteHeight = spriteTransform?.contentSize.height ?? 0;
-      createSpriteNode(
+      return ensureSpriteNode(
         spriteAnchor,
+        configuredSprite,
         spriteNodeName,
         spriteFrame,
         new Vec3(0, 0, 0),
         spriteWidth,
         spriteHeight,
+        true,
+        this.runtimeFallbackNodes,
       );
     } catch (error) {
       console.error(`[MainSceneHudView] hud panel load failed: ${resourcePath}`, error);
+      return null;
     }
   }
 
@@ -330,20 +393,32 @@ export class MainSceneHudView extends Component {
     position: Vec3,
     width: number,
     height: number,
+    preferSceneAuthoredLayout = false,
   ): Node {
     const existingNode =
       configuredNode?.isValid ? configuredNode : parent.getChildByName(nodeName);
     const mountedNode =
       existingNode ?? createLayerNode(parent, nodeName, position, width, height);
 
+    if (!existingNode) {
+      this.runtimeFallbackNodes.add(mountedNode);
+    }
+
     if (mountedNode.parent !== parent) {
       mountedNode.parent = parent;
     }
 
-    mountedNode.setPosition(position);
-    const transform =
-      mountedNode.getComponent(UITransform) ?? mountedNode.addComponent(UITransform);
-    transform.setContentSize(width, height);
+    if (!existingNode || !preferSceneAuthoredLayout) {
+      mountedNode.setPosition(position);
+      const transform =
+        mountedNode.getComponent(UITransform) ?? mountedNode.addComponent(UITransform);
+      transform.setContentSize(width, height);
+    } else if (this.runtimeFallbackNodes.has(mountedNode)) {
+      mountedNode.setPosition(position);
+      const transform =
+        mountedNode.getComponent(UITransform) ?? mountedNode.addComponent(UITransform);
+      transform.setContentSize(width, height);
+    }
 
     return mountedNode;
   }
@@ -364,6 +439,7 @@ export class MainSceneHudView extends Component {
     color: Color,
     horizontalAlign: number,
     isBold: boolean,
+    preferSceneAuthoredLayout = false,
   ): Label {
     const existingLabel =
       configuredLabel?.isValid && configuredLabel.node.isValid
@@ -372,27 +448,44 @@ export class MainSceneHudView extends Component {
     const labelNode =
       existingLabel?.node ?? createLayerNode(parent, nodeName, position, width, height);
 
+    if (!existingLabel) {
+      this.runtimeFallbackNodes.add(labelNode);
+    }
+
     if (labelNode.parent !== parent) {
       labelNode.parent = parent;
     }
 
-    labelNode.setPosition(position);
-    const transform =
-      labelNode.getComponent(UITransform) ?? labelNode.addComponent(UITransform);
-    transform.setContentSize(width, height);
-
     const label = existingLabel ?? labelNode.addComponent(Label);
-    label.string = defaultText;
-    label.fontSize = fontSize;
-    label.lineHeight = fontSize + 10;
-    label.color = color;
-    label.enableWrapText = true;
-    label.overflow = Label.Overflow.SHRINK;
-    label.horizontalAlign = horizontalAlign;
-    label.verticalAlign = Label.VerticalAlign.CENTER;
-    label.isBold = isBold;
+    if (
+      !existingLabel ||
+      !preferSceneAuthoredLayout ||
+      this.runtimeFallbackNodes.has(labelNode)
+    ) {
+      labelNode.setPosition(position);
+      const transform =
+        labelNode.getComponent(UITransform) ?? labelNode.addComponent(UITransform);
+      transform.setContentSize(width, height);
+      label.string = defaultText;
+      label.fontSize = fontSize;
+      label.lineHeight = fontSize + 10;
+      label.color = color;
+      label.enableWrapText = true;
+      label.overflow = Label.Overflow.SHRINK;
+      label.horizontalAlign = horizontalAlign;
+      label.verticalAlign = Label.VerticalAlign.CENTER;
+      label.isBold = isBold;
+    }
 
     return label;
+  }
+
+  /**
+   * 判断某个 HUD 节点当前是否仍应使用运行时默认布局。
+   * 只有旧场景缺节点时创建出的 fallback 节点才继续由 TS 控制层级和尺寸。
+   */
+  private shouldUseRuntimeLayoutForNode(node: Node | null): boolean {
+    return !!node?.isValid && this.runtimeFallbackNodes.has(node);
   }
 
   /**

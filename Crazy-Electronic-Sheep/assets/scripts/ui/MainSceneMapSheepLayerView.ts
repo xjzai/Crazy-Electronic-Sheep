@@ -42,7 +42,7 @@ const SHEEP_IDLE_ENERGY_FEEDBACK_FONT_SIZE = 100;
 export interface MainSceneMapSheepRenderOptions {
   layoutScale: number;
   sheepArtAnchor: Node;
-  sheepStatusLabel: Label;
+  showStatusMessage: (message: string) => void;
 }
 
 export interface MainSceneMapSheepFeedbackOptions {
@@ -78,7 +78,7 @@ export class MainSceneMapSheepLayerView extends Component {
 
   /**
    * 按当前游戏状态重绘可见地图羊群。
-   * 输入来自业务快照，输出只影响本组件节点树和状态提示文本。
+   * 输入来自业务快照，输出只影响本组件节点树和顶部提示文本。
    */
   public async render(
     gameState: GameState,
@@ -93,7 +93,7 @@ export class MainSceneMapSheepLayerView extends Component {
     this.node.removeAllChildren();
 
     if (sheepInstances.length === 0) {
-      options.sheepStatusLabel.string = '当前第一图没有可显示的羊实例';
+      options.showStatusMessage('当前第一图没有可显示的羊实例');
       return;
     }
 

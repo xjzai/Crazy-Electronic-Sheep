@@ -1,5 +1,11 @@
 import { Color, Graphics, Label, Node, Sprite, SpriteFrame, UITransform, Vec3 } from 'cc';
 
+const RUNTIME_MANAGED_NODE_FLAG = Symbol('runtimeManagedNode');
+
+type RuntimeManagedNode = Node & {
+  [RUNTIME_MANAGED_NODE_FLAG]?: true;
+};
+
 /**
  * HUD 面板由贴图层和文字层组成。
  * 贴图层永远在底部，文字层永远在上面，避免异步挂图覆盖文本。
@@ -8,6 +14,23 @@ export interface HudPanelLayers {
   root: Node;
   spriteAnchor: Node;
   labelLayer: Node;
+}
+
+/**
+ * 给运行时代码创建的节点打统一标记。
+ * 基础视图 rebuild 时会据此判断哪些子节点属于“代码临时内容”，从而只清理 fallback 节点而不碰场景预挂载结构。
+ */
+export function markRuntimeManagedNode<T extends Node>(node: T): T {
+  (node as RuntimeManagedNode)[RUNTIME_MANAGED_NODE_FLAG] = true;
+  return node;
+}
+
+/**
+ * 判断某个节点是否属于运行时代码创建的临时节点。
+ * 该判断跨组件共享，避免每个视图都维护一份独立白名单再让基础视图猜测哪些名字该保留。
+ */
+export function isRuntimeManagedNode(node: Node | null | undefined): boolean {
+  return !!node?.isValid && (node as RuntimeManagedNode)[RUNTIME_MANAGED_NODE_FLAG] === true;
 }
 
 /**
@@ -20,7 +43,7 @@ export function createLayerNode(
   width: number,
   height: number,
 ): Node {
-  const node = new Node(name);
+  const node = markRuntimeManagedNode(new Node(name));
   node.parent = parent;
   node.setPosition(position);
 
@@ -75,7 +98,7 @@ export function createSpriteNode(
   width: number,
   height: number,
 ): Sprite {
-  const node = new Node(name);
+  const node = markRuntimeManagedNode(new Node(name));
   node.parent = parent;
   node.setPosition(position);
 
@@ -83,6 +106,54 @@ export function createSpriteNode(
   transform.setContentSize(width, height);
 
   const sprite = node.addComponent(Sprite);
+  sprite.sizeMode = Sprite.SizeMode.CUSTOM;
+  sprite.spriteFrame = spriteFrame;
+
+  return sprite;
+}
+
+/**
+ * 查找或创建一个可在 Cocos 场景中预挂载的 `Sprite` 节点。
+ * 运行时只同步父节点、位置、尺寸和贴图资源，不销毁用户已经在层级面板中摆好的节点。
+ */
+export function ensureSpriteNode(
+  parent: Node,
+  configuredSprite: Sprite | null,
+  name: string,
+  spriteFrame: SpriteFrame,
+  position: Vec3,
+  width: number,
+  height: number,
+  preferSceneAuthoredLayout = false,
+  runtimeFallbackNodes?: WeakSet<Node>,
+): Sprite {
+  const existingSprite =
+    configuredSprite?.isValid && configuredSprite.node.isValid
+      ? configuredSprite
+      : parent.getChildByName(name)?.getComponent(Sprite) ?? null;
+  const spriteNode =
+    existingSprite?.node ?? createLayerNode(parent, name, position, width, height);
+
+  if (!existingSprite && runtimeFallbackNodes) {
+    runtimeFallbackNodes.add(spriteNode);
+  }
+
+  if (spriteNode.parent !== parent) {
+    spriteNode.parent = parent;
+  }
+
+  if (
+    !existingSprite ||
+    !preferSceneAuthoredLayout ||
+    (runtimeFallbackNodes?.has(spriteNode) ?? false)
+  ) {
+    spriteNode.setPosition(position);
+    const transform =
+      spriteNode.getComponent(UITransform) ?? spriteNode.addComponent(UITransform);
+    transform.setContentSize(width, height);
+  }
+
+  const sprite = existingSprite ?? spriteNode.addComponent(Sprite);
   sprite.sizeMode = Sprite.SizeMode.CUSTOM;
   sprite.spriteFrame = spriteFrame;
 
@@ -101,7 +172,7 @@ export function createRect(
   fillColor: Color,
   strokeColor: Color,
 ): Node {
-  const node = new Node(name);
+  const node = markRuntimeManagedNode(new Node(name));
   node.parent = parent;
   node.setPosition(position);
 
@@ -135,7 +206,7 @@ export function createLabel(
   horizontalAlign: number = Label.HorizontalAlign.CENTER,
   isBold: boolean = false,
 ): Label {
-  const node = new Node(name);
+  const node = markRuntimeManagedNode(new Node(name));
   node.parent = parent;
   node.setPosition(position);
 
@@ -170,7 +241,7 @@ export function createRoundedRect(
   strokeColor: Color,
   lineWidth: number,
 ): Node {
-  const node = new Node(name);
+  const node = markRuntimeManagedNode(new Node(name));
   node.parent = parent;
   node.setPosition(position);
 
@@ -203,7 +274,7 @@ export function createEllipse(
   strokeColor: Color,
   lineWidth: number,
 ): Node {
-  const node = new Node(name);
+  const node = markRuntimeManagedNode(new Node(name));
   node.parent = parent;
   node.setPosition(position);
 
